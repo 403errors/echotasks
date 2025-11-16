@@ -23,7 +23,7 @@ export async function getTranscription(formData: FormData) {
     const { result, error } = await deepgram.listen.prerecorded.transcribeFile(
       buffer,
       {
-        model: 'nova-2',
+        model: 'nova-3',
         smart_format: true,
       }
     );
@@ -57,8 +57,8 @@ export async function getTranscription(formData: FormData) {
 export async function analyzeTask(taskDescription: string): Promise<AnalyzeTaskDetailsOutput | null> {
     if (!taskDescription) return null;
     
-    if (!process.env.OPENAI_API_KEY) {
-        throw new Error("OpenAI API key is not configured. Please set the OPENAI_API_KEY environment variable in your .env file.");
+    if (!process.env.GROQ_API_KEY) {
+        throw new Error("Groq API key is not configured. Please set the GROQ_API_KEY environment variable in your .env file.");
     }
 
     try {

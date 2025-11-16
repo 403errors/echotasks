@@ -1,9 +1,9 @@
 
 "use client";
 
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useTasks } from '@/lib/hooks/use-tasks';
-import { VoiceRecorder } from '@/components/voice-recorder';
+import { VoiceRecorder, VoiceRecorderRef } from '@/components/voice-recorder';
 import { TaskList } from '@/components/task-list';
 import { getTranscription, analyzeTask } from '@/app/actions';
 import { useToast } from "@/hooks/use-toast";
@@ -124,6 +124,8 @@ export default function Home() {
   const [isProTipOpen, setIsProTipOpen] = useState(false);
   const { settings } = useSettings();
   const isMobile = useIsMobile();
+  const voiceRecorderRef = useRef<VoiceRecorderRef>(null);
+  const spacebarHeldRef = useRef(false);
 
   const [filteredTasksState, setFilteredTasksState] = useState<{
     isOpen: boolean;
@@ -142,6 +144,38 @@ export default function Home() {
           setIsProTipOpen(true);
       }
   }, [isMobile, settings.spacebarToTalk]);
+
+    useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== 'Space' || event.repeat || !settings.spacebarToTalk || spacebarHeldRef.current) {
+        return;
+      }
+      const target = event.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        return;
+      }
+      event.preventDefault();
+      spacebarHeldRef.current = true;
+      voiceRecorderRef.current?.startRecording();
+    };
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.code !== 'Space' || !settings.spacebarToTalk || !spacebarHeldRef.current) {
+        return;
+      }
+      event.preventDefault();
+      spacebarHeldRef.current = false;
+      voiceRecorderRef.current?.stopRecording();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [settings.spacebarToTalk]);
 
   const handleDismissProTip = () => {
       setIsProTipOpen(false);
@@ -522,7 +556,7 @@ export default function Home() {
             
             <div className="space-y-4">
               <div className="flex flex-col items-center justify-center gap-4">
-                  <VoiceRecorder onRecordingComplete={handleRecordingComplete} isProcessing={isProcessing} />
+                  <VoiceRecorder ref={voiceRecorderRef} onRecordingComplete={handleRecordingComplete} isProcessing={isProcessing} />
                   <AnimatedSuggestions />
                   {isProcessing && (
                       <div className="flex items-center gap-2 text-muted-foreground">

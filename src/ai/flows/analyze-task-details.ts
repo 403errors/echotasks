@@ -7,8 +7,7 @@
  * and extracts relevant entities from the command.
  */
 
-const MODEL_NAME = 'gpt-4o-mini';
-const API_URL = 'https://api.openai.com/v1/chat/completions';
+import { Groq } from 'groq-sdk';
 
 // Define the input and a more complex output type for the command analysis.
 export type AnalyzeTaskDetailsInput = {
@@ -112,39 +111,40 @@ Examples:
 Now, process the provided user's task description.
 `;
 
+const groq = new Groq(); // API key is picked from GROQ_API_KEY env var
+
 export async function analyzeTaskDetails(
   input: AnalyzeTaskDetailsInput
 ): Promise<AnalyzeTaskDetailsOutput> {
-  const response = await fetch(API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: MODEL_NAME,
-      response_format: { type: 'json_object' },
+  try {
+    const chatCompletion = await groq.chat.completions.create({
       messages: [
         {
-          role: 'system',
+          role: "system",
           content: systemPrompt,
         },
         {
-          role: 'user',
+          role: "user",
           content: input.taskDescription,
-        },
+        }
       ],
+      model: "qwen/qwen3-32b", // As requested by the user
       temperature: 0.1,
-    }),
-  });
+      response_format: { type: 'json_object' },
+    });
 
-  if (!response.ok) {
-    const errorBody = await response.text();
-    console.error("OpenAI API Error:", errorBody);
-    throw new Error(`OpenAI API request failed with status ${response.status}`);
+    const content = chatCompletion.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error("Groq API returned an empty response.");
+    }
+    
+    return JSON.parse(content) as AnalyzeTaskDetailsOutput;
+
+  } catch (error) {
+    console.error("Groq API Error:", error);
+    if (error instanceof Error) {
+        throw new Error(`Groq API request failed: ${error.message}`);
+    }
+    throw new Error("An unknown error occurred with the Groq API request.");
   }
-
-  const data = await response.json();
-  const content = data.choices[0].message.content;
-  return JSON.parse(content) as AnalyzeTaskDetailsOutput;
 }

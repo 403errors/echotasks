@@ -17,11 +17,11 @@ type InfoDialogProps = {
 
 const techInfo = [
     {
-        name: "Deepgram",
+        name: "Deepgram (Nova-3)",
         reason: "For blazingly fast and accurate speech-to-text transcription. It turns your voice commands into text that the AI can understand in real-time."
     },
     {
-        name: "GPT-4o-mini",
+        name: "Groq (qwen/qwen3-32b)",
         reason: "As the AI brain of the application. It analyzes the transcribed text to understand your intent (e.g., add, delete, update) and extracts key details like task names."
     },
     {
