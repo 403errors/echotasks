@@ -15,7 +15,7 @@ type VoiceRecorderProps = {
 export function VoiceRecorder({ onRecordingComplete, isProcessing }: VoiceRecorderProps) {
   const { settings } = useSettings();
   const [isRecording, setIsRecording] = useState(false);
-  const [hasPermission, setHasPermission] = useState<boolean | null>(null);
+  const [hasPermission, setHasPermission] = useState(true); // Assume true, will be updated on error
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -23,30 +23,6 @@ export function VoiceRecorder({ onRecordingComplete, isProcessing }: VoiceRecord
   const analyserRef = useRef<AnalyserNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const spacebarHeldRef = useRef(false);
-
-  const checkMicPermission = useCallback(async () => {
-    try {
-      // Check permission status without prompting
-      const permissionStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName });
-      if (permissionStatus.state === 'granted') {
-        setHasPermission(true);
-      } else if (permissionStatus.state === 'denied') {
-        setHasPermission(false);
-      } else {
-        setHasPermission(null); // Prompt needed
-      }
-      permissionStatus.onchange = () => {
-        setHasPermission(permissionStatus.state === 'granted');
-      };
-    } catch (error) {
-      console.error("Permissions API not supported, falling back to getUserMedia check", error);
-      setHasPermission(null); // Fallback to prompt on action
-    }
-  }, []);
-
-  useEffect(() => {
-    checkMicPermission();
-  }, [checkMicPermission]);
 
   const stopSilenceTimer = () => {
     if (silenceTimerRef.current) {
@@ -67,21 +43,17 @@ export function VoiceRecorder({ onRecordingComplete, isProcessing }: VoiceRecord
   }, []);
 
   const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current && isRecording) {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
       mediaRecorderRef.current.stop();
-      setIsRecording(false);
     }
-  }, [isRecording]);
+    // We set isRecording to false in the onstop handler
+  }, []);
 
   const startRecording = useCallback(async () => {
     if (isRecording || isProcessing) return;
-    
-    if (hasPermission === false) {
-      alert('Microphone access is denied. Please enable it in your browser settings.');
-      return;
-    }
 
     try {
+      // Directly request microphone access. This is the key change to trigger the prompt.
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       setHasPermission(true);
@@ -96,6 +68,7 @@ export function VoiceRecorder({ onRecordingComplete, isProcessing }: VoiceRecord
       };
 
       mediaRecorderRef.current.onstop = () => {
+        setIsRecording(false);
         stopSilenceTimer();
         if (audioChunksRef.current.length > 0) {
             const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
@@ -103,6 +76,12 @@ export function VoiceRecorder({ onRecordingComplete, isProcessing }: VoiceRecord
         }
         stopMediaStream();
       };
+      
+      mediaRecorderRef.current.onerror = (event) => {
+        console.error('MediaRecorder error:', event);
+        setIsRecording(false);
+        stopMediaStream();
+      }
 
       mediaRecorderRef.current.start();
       setIsRecording(true);
@@ -142,9 +121,9 @@ export function VoiceRecorder({ onRecordingComplete, isProcessing }: VoiceRecord
     } catch (error) {
       console.error('Error accessing microphone:', error);
       setHasPermission(false);
-      alert('Could not access microphone. Please check permissions and try again.');
+      alert('Could not access microphone. Please enable it in your browser settings and refresh the page.');
     }
-  }, [isRecording, isProcessing, hasPermission, settings.micMode, settings.intelligentStopDuration, onRecordingComplete, stopMediaStream, stopRecording]);
+  }, [isRecording, isProcessing, settings.micMode, settings.intelligentStopDuration, onRecordingComplete, stopMediaStream, stopRecording]);
 
 
   useEffect(() => {
@@ -209,7 +188,7 @@ export function VoiceRecorder({ onRecordingComplete, isProcessing }: VoiceRecord
       onPointerDown={handlePointerDown}
       onPointerUp={handlePointerUp}
       onPointerLeave={handlePointerUp} // Stop if user's finger leaves the button
-      disabled={isProcessing || (hasPermission === null && settings.micMode === 'tap')}
+      disabled={isProcessing || !hasPermission}
       size="lg"
       className={cn(
         'w-20 h-20 rounded-full transition-all duration-300 ease-in-out touch-none',
