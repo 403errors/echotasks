@@ -123,6 +123,8 @@ Here are some of the many commands you can use with EchoTasks:
 - "Delete all overdue tasks"
 - "Clear my to-do list"
 
-**Sorting**
+**Viewing & Sorting**
 - "Sort my list by due date"
 - "Sort by priority from high to low"
+- "Show me my grocery related tasks"
+- "Show me tasks to be done this week"

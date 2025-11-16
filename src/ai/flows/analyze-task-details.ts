@@ -21,7 +21,7 @@ type TaskInfo = {
 };
 
 export type AnalyzeTaskDetailsOutput = {
-  intent: 'ADD_TASK' | 'DELETE_TASK' | 'UPDATE_TASK' | 'MARK_COMPLETED' | 'DELETE_ALL' | 'DELETE_OVERDUE' | 'SORT_BY' | 'UNKNOWN';
+  intent: 'ADD_TASK' | 'DELETE_TASK' | 'UPDATE_TASK' | 'MARK_COMPLETED' | 'DELETE_ALL' | 'DELETE_OVERDUE' | 'SORT_BY' | 'SHOW_TASKS' | 'UNKNOWN';
   tasks?: TaskInfo[]; // For ADD_TASK, now an array of objects
   filter?: { // For targeting tasks in DELETE, UPDATE, MARK_COMPLETED
     positions?: (number | 'last')[];
@@ -35,13 +35,14 @@ export type AnalyzeTaskDetailsOutput = {
     location?: string;
   };
   sortOption?: 'creationDate' | 'dueDate' | 'lastUpdated' | 'priorityHighToLow' | 'priorityLowToHigh'; // For SORT_BY
+  searchQuery?: string; // For SHOW_TASKS
 };
 
 const systemPrompt = `You are a sophisticated personal task assistant command parser. Your job is to analyze a transcribed voice command and determine the user's intent and the entities associated with that intent.
 
 Your output MUST be a JSON object with the following structure:
 {
-  "intent": "ADD_TASK" | "DELETE_TASK" | "UPDATE_TASK" | "MARK_COMPLETED" | "DELETE_ALL" | "DELETE_OVERDUE" | "SORT_BY" | "UNKNOWN",
+  "intent": "ADD_TASK" | "DELETE_TASK" | "UPDATE_TASK" | "MARK_COMPLETED" | "DELETE_ALL" | "DELETE_OVERDUE" | "SORT_BY" | "SHOW_TASKS" | "UNKNOWN",
   "tasks": [{ "text": "string", "location": "string" | null }, ...],
   "filter": {
     "positions": ["last" | number],
@@ -54,7 +55,8 @@ Your output MUST be a JSON object with the following structure:
     "dueDate": "string, e.g., 'tomorrow', 'next Friday'",
     "location": "string"
   },
-  "sortOption": "creationDate" | "dueDate" | "lastUpdated" | "priorityHighToLow" | "priorityLowToHigh"
+  "sortOption": "creationDate" | "dueDate" | "lastUpdated" | "priorityHighToLow" | "priorityLowToHigh",
+  "searchQuery": "string"
 }
 
 - "intent": The primary action.
@@ -65,6 +67,7 @@ Your output MUST be a JSON object with the following structure:
   - "status": Filter by whether tasks are done or not.
 - "updates": For UPDATE_TASK, specifies what to change. The AI should extract what the new value should be.
 - "sortOption": For SORT_BY, extract the sorting criteria. Map user phrases to the allowed values. e.g., "due date" -> "dueDate", "priority" -> "priorityHighToLow".
+- "searchQuery": For SHOW_TASKS, this should be the keyword or phrase the user wants to filter by (e.g., "administrative", "grocery", "this week").
 
 Examples:
 - Input: "Remind me to buy milk by this Friday and it's super important"
@@ -97,6 +100,12 @@ Examples:
   Output: { "intent": "SORT_BY", "sortOption": "dueDate" }
 - Input: "sort by priority high to low"
   Output: { "intent": "SORT_BY", "sortOption": "priorityHighToLow" }
+- Input: "show me all administrative tasks"
+  Output: { "intent": "SHOW_TASKS", "searchQuery": "administrative" }
+- Input: "show me my grocery list"
+  Output: { "intent": "SHOW_TASKS", "searchQuery": "grocery" }
+- Input: "what do I have to do this week"
+  Output: { "intent": "SHOW_TASKS", "searchQuery": "this week" }
 - Input: "what's the weather"
   Output: { "intent": "UNKNOWN" }
 

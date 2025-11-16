@@ -1,3 +1,4 @@
+
 import type {Metadata} from 'next';
 import './globals.css';
 import { Toaster } from "@/components/ui/toaster"
@@ -11,7 +12,7 @@ export const metadata: Metadata = {
     description: 'Manage your tasks entirely through voice commands. Fast, intuitive, and powered by AI.',
     images: [
       {
-        url: '/echotasks_preview.png',
+        url: 'https://studio--studio-6766374493-7e412.us-central1.hosted.app/echotasks_preview.png', // Use an absolute URL
         width: 1200,
         height: 630,
         alt: 'EchoTasks Application Preview',

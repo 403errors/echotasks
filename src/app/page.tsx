@@ -1,5 +1,4 @@
 
-
 "use client";
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
@@ -8,7 +7,7 @@ import { VoiceRecorder } from '@/components/voice-recorder';
 import { TaskList } from '@/components/task-list';
 import { getTranscription, analyzeTask } from '@/app/actions';
 import { useToast } from "@/hooks/use-toast";
-import { LoaderCircle, ArrowDownUp, Undo2, Info, X } from 'lucide-react';
+import { LoaderCircle, ArrowDownUp, Undo2, Info } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { detectPriorityFast } from '@/lib/priority-detection';
 import * as chrono from 'chrono-node';
@@ -25,11 +24,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Button } from '@/components/ui/button';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { UserGreeting } from '@/components/user-greeting';
 import { SettingsSheet } from '@/components/settings-sheet';
 import { useSettings } from '@/lib/hooks/use-settings';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { FilteredTasksDialog } from '@/components/filtered-tasks-dialog';
+import { ProTipDialog } from '@/components/pro-tip-dialog';
 
 
 type SortOption = 'creationDate' | 'dueDate' | 'lastUpdated' | 'priorityHighToLow' | 'priorityLowToHigh';
@@ -56,6 +57,8 @@ export const commandExamples = [
   "Sort my list by due date",
   "Delete all overdue tasks",
   "Clear my to-do list",
+  "Show me my grocery related tasks",
+  "Show me tasks to be done this week",
 ];
 
 function AnimatedSuggestions() {
@@ -118,20 +121,30 @@ export default function Home() {
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [sortOption, setSortOption] = useState<SortOption>('creationDate');
   const [isInfoDialogOpen, setIsInfoDialogOpen] = useState(false);
-  const [showSpacebarTip, setShowSpacebarTip] = useState(false);
+  const [isProTipOpen, setIsProTipOpen] = useState(false);
   const { settings } = useSettings();
   const isMobile = useIsMobile();
+
+  const [filteredTasksState, setFilteredTasksState] = useState<{
+    isOpen: boolean;
+    title: string;
+    tasks: Task[];
+  }>({
+    isOpen: false,
+    title: '',
+    tasks: [],
+  });
 
   useEffect(() => {
       // Show the tip only on desktop if the feature is enabled
       const tipShown = localStorage.getItem('spacebarTipShown');
       if (!isMobile && settings.spacebarToTalk && !tipShown) {
-          setShowSpacebarTip(true);
+          setIsProTipOpen(true);
       }
   }, [isMobile, settings.spacebarToTalk]);
 
-  const handleDismissSpacebarTip = () => {
-      setShowSpacebarTip(false);
+  const handleDismissProTip = () => {
+      setIsProTipOpen(false);
       localStorage.setItem('spacebarTipShown', 'true');
   };
 
@@ -172,8 +185,12 @@ export default function Home() {
     }
 
     if (filter.priority && filter.priority.length > 0) {
-        const prioritySet = new Set(filter.priority);
-        filteredTasks = filteredTasks.filter(t => t.priority && prioritySet.has(t.priority));
+        // If a position is also specified, ignore the priority filter for positional updates.
+        // This prevents "update first task to low priority" from updating all high priority tasks.
+        if (!filter.positions || filter.positions.length === 0) {
+            const prioritySet = new Set(filter.priority);
+            filteredTasks = filteredTasks.filter(t => t.priority && prioritySet.has(t.priority));
+        }
     }
 
     // After other filters, apply position filter
@@ -192,7 +209,7 @@ export default function Home() {
         // This maps the filtered indices back to the original unfiltered tasks array
         const finalTasks: Task[] = [];
         const filteredTaskIds = new Set(filteredTasks.map(t => t.id));
-        const allTasksInOrder = tasks.filter(t => filteredTaskIds.has(t.id));
+        const allTasksInOrder = sortedTasks.filter(t => filteredTaskIds.has(t.id));
 
         indices.forEach(index => {
           if(allTasksInOrder[index]) {
@@ -258,8 +275,8 @@ export default function Home() {
   const handleRecordingComplete = async (audioBlob: Blob) => {
     setIsProcessing(true);
     try {
-      if (showSpacebarTip) {
-          handleDismissSpacebarTip();
+      if (isProTipOpen) {
+          handleDismissProTip();
       }
       const formData = new FormData();
       formData.append('audio', audioBlob, 'recording.webm');
@@ -382,6 +399,45 @@ export default function Home() {
             break;
         }
 
+        case 'SHOW_TASKS': {
+            const query = analysis.searchQuery?.toLowerCase();
+            if (!query) {
+                toast({ variant: "destructive", title: "No search criteria found" });
+                break;
+            }
+
+            const parsedDateRange = chrono.parse(query);
+            let filtered: Task[] = [];
+            
+            if (parsedDateRange.length > 0) {
+                // Date range query
+                const { start, end } = parsedDateRange[0];
+                const startDate = start.date();
+                const endDate = end ? end.date() : new Date(startDate.getTime() + 24 * 60 * 60 * 1000 -1);
+
+                filtered = tasks.filter(task => {
+                    if (!task.dueDate) return false;
+                    const taskDueDate = new Date(task.dueDate);
+                    return taskDueDate >= startDate && taskDueDate <= endDate;
+                });
+            } else {
+                // Keyword query
+                filtered = tasks.filter(task => task.text.toLowerCase().includes(query));
+            }
+
+
+            if (filtered.length === 0) {
+                toast({ title: "No tasks found", description: `No tasks match your search for "${query}".` });
+            } else {
+                setFilteredTasksState({
+                    isOpen: true,
+                    title: `Tasks matching "${query}"`,
+                    tasks: filtered
+                });
+            }
+            break;
+        }
+
         case 'DELETE_ALL': {
             if (tasks.length === 0) {
                 toast({ title: "No Tasks to Delete", description: "Your to-do list is already empty." });
@@ -438,112 +494,95 @@ export default function Home() {
   return (
     <>
       <main className="flex min-h-screen w-full flex-col bg-background p-4 sm:p-6 md:p-8 font-body">
-        {!isMobile && (
-          <div className="absolute top-4 left-4 sm:top-6 sm:left-6 md:top-8 md:left-8">
-              <UserGreeting />
+        <div className="relative flex-grow flex flex-col">
+          {!isMobile && (
+            <div className="absolute top-0 left-0">
+                <UserGreeting />
+            </div>
+          )}
+          <div className="absolute top-0 right-0 flex flex-col items-center gap-2">
+              <SettingsSheet />
+              {!isMobile && (
+                <Button variant="ghost" size="icon" onClick={() => setIsInfoDialogOpen(true)}>
+                    <Info className="h-5 w-5" />
+                    <span className="sr-only">Info</span>
+                </Button>
+              )}
           </div>
-        )}
-        <div className="absolute top-4 right-4 sm:top-6 sm:right-6 md:top-8 md:right-8 flex flex-col items-center gap-2">
-            <SettingsSheet />
-            {!isMobile && (
-              <Button variant="ghost" size="icon" onClick={() => setIsInfoDialogOpen(true)}>
-                  <Info className="h-5 w-5" />
-                  <span className="sr-only">Info</span>
-              </Button>
-            )}
-        </div>
-        
-        <div className="w-full max-w-2xl mx-auto flex flex-col justify-center flex-grow">
-          <header className="text-center mb-8">
-            <h1 className="text-4xl sm:text-5xl font-headline font-bold bg-clip-text text-transparent bg-gradient-to-r from-primary to-accent mb-2">
-              EchoTasks
-            </h1>
-            <p className="text-lg text-muted-foreground">
-              Create your to-do list by just speaking.
-            </p>
-          </header>
           
-          <div className="space-y-4">
-            <div className="flex flex-col items-center justify-center gap-4">
-                <VoiceRecorder onRecordingComplete={handleRecordingComplete} isProcessing={isProcessing} />
-                <AnimatedSuggestions />
-                {isProcessing && (
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                        <LoaderCircle className="animate-spin h-4 w-4" />
-                        <span>Processing your command...</span>
+          <div className="w-full max-w-2xl mx-auto flex flex-col justify-center flex-grow">
+            <header className="text-center mb-8">
+              <h1 className="text-4xl sm:text-5xl font-headline font-bold bg-clip-text text-transparent bg-gradient-to-r from-primary to-accent mb-2">
+                EchoTasks
+              </h1>
+              <p className="text-lg text-muted-foreground">
+                Create your to-do list by just speaking.
+              </p>
+            </header>
+            
+            <div className="space-y-4">
+              <div className="flex flex-col items-center justify-center gap-4">
+                  <VoiceRecorder onRecordingComplete={handleRecordingComplete} isProcessing={isProcessing} />
+                  <AnimatedSuggestions />
+                  {isProcessing && (
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                          <LoaderCircle className="animate-spin h-4 w-4" />
+                          <span>Processing your command...</span>
+                      </div>
+                  )}
+              </div>
+
+              <div className='flex justify-between items-center'>
+                <div className='h-10 w-24'>
+                  {lastAction && (
+                    <div className="relative overflow-hidden rounded-md">
+                      <Button variant="outline" onClick={handleUndo} className="w-full">
+                        <Undo2 className="mr-2 h-4 w-4" />
+                        Undo
+                      </Button>
+                      <motion.div
+                        className="absolute bottom-0 left-0 h-1 bg-primary/50"
+                        initial={{ width: '100%' }}
+                        animate={{ width: '0%' }}
+                        transition={{ duration: 10, ease: 'linear' }}
+                      />
                     </div>
-                )}
-            </div>
-
-            <div className='flex justify-between items-center'>
-              <div className='h-10 w-24'>
-                {lastAction && (
-                  <div className="relative overflow-hidden rounded-md">
-                    <Button variant="outline" onClick={handleUndo} className="w-full">
-                      <Undo2 className="mr-2 h-4 w-4" />
-                      Undo
+                  )}
+                </div>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline">
+                      <ArrowDownUp className="mr-2 h-4 w-4" />
+                      Sort By
                     </Button>
-                    <motion.div
-                      className="absolute bottom-0 left-0 h-1 bg-primary/50"
-                      initial={{ width: '100%' }}
-                      animate={{ width: '0%' }}
-                      transition={{ duration: 10, ease: 'linear' }}
-                    />
-                  </div>
-                )}
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent className="w-56">
+                    <DropdownMenuRadioGroup value={sortOption} onValueChange={(value) => setSortOption(value as SortOption)}>
+                      <DropdownMenuRadioItem value="creationDate">Date Created</DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="lastUpdated">Last Updated</DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="dueDate">Due Date</DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="priorityHighToLow">Priority (High to Low)</DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="priorityLowToHigh">Priority (Low to High)</DropdownMenuRadioItem>
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline">
-                    <ArrowDownUp className="mr-2 h-4 w-4" />
-                    Sort By
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent className="w-56">
-                  <DropdownMenuRadioGroup value={sortOption} onValueChange={(value) => setSortOption(value as SortOption)}>
-                    <DropdownMenuRadioItem value="creationDate">Date Created</DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="lastUpdated">Last Updated</DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="dueDate">Due Date</DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="priorityHighToLow">Priority (High to Low)</DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="priorityLowToHigh">Priority (Low to High)</DropdownMenuRadioItem>
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
 
-            <Card className="w-full shadow-2xl">
-              <div className="p-4 sm:p-6 min-h-[300px]">
-                {!isLoaded ? (
-                   <div className="flex justify-center items-center h-full min-h-[250px]">
-                      <LoaderCircle className="animate-spin h-8 w-8 text-primary" />
-                   </div>
-                ) : (
-                  <TaskList tasks={sortedTasks} onToggle={toggleTask} onDelete={deleteTask} onEdit={handleEditTask} />
-                )}
-              </div>
-            </Card>
+              <Card className="w-full shadow-2xl">
+                <div className="p-4 sm:p-6 min-h-[300px]">
+                  {!isLoaded ? (
+                     <div className="flex justify-center items-center h-full min-h-[250px]">
+                        <LoaderCircle className="animate-spin h-8 w-8 text-primary" />
+                     </div>
+                  ) : (
+                    <TaskList tasks={sortedTasks} onToggle={toggleTask} onDelete={deleteTask} onEdit={handleEditTask} />
+                  )}
+                </div>
+              </Card>
+            </div>
           </div>
         </div>
       </main>
-    
-      <AnimatePresence>
-          {showSpacebarTip && (
-              <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 20 }}
-                  className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-secondary text-secondary-foreground text-sm p-3 rounded-lg shadow-lg flex items-center gap-4"
-              >
-                  <p>
-                      <b>Pro Tip:</b> Hold the <kbd className="px-2 py-1.5 text-xs font-semibold text-gray-800 bg-gray-100 border border-gray-200 rounded-lg">Space</kbd> key to talk.
-                  </p>
-                  <Button variant="ghost" size="icon" className="h-6 w-6" onClick={handleDismissSpacebarTip}>
-                      <X className="h-4 w-4" />
-                  </Button>
-              </motion.div>
-          )}
-      </AnimatePresence>
-
 
       {editingTask && (
         <EditTaskDialog
@@ -563,10 +602,19 @@ export default function Home() {
           isOpen={isInfoDialogOpen}
           onOpenChange={setIsInfoDialogOpen}
       />
+      <FilteredTasksDialog
+          isOpen={filteredTasksState.isOpen}
+          onOpenChange={(isOpen) => setFilteredTasksState(prev => ({...prev, isOpen}))}
+          title={filteredTasksState.title}
+          tasks={filteredTasksState.tasks}
+          onEdit={handleEditTask}
+          onToggle={toggleTask}
+          onDelete={deleteTask}
+      />
+      <ProTipDialog
+        isOpen={isProTipOpen}
+        onOpenChange={handleDismissProTip}
+      />
     </>
   );
 }
-
-    
-
-    
