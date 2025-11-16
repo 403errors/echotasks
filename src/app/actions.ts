@@ -3,11 +3,15 @@
 import { DeepgramClient, createClient } from '@deepgram/sdk';
 import { analyzeTaskDetails, AnalyzeTaskDetailsOutput } from '@/ai/flows/analyze-task-details';
 
-export async function getTranscription(formData: FormData) {
+export async function processVoiceCommand(formData: FormData): Promise<{ transcript: string, analysis: AnalyzeTaskDetailsOutput | null }> {
   const deepgramApiKey = process.env.DEEPGRAM_API_KEY;
+  const groqApiKey = process.env.GROQ_API_KEY;
 
   if (!deepgramApiKey) {
-    throw new Error("Deepgram API key is not configured. Please set the DEEPGRAM_API_KEY environment variable.");
+    throw new Error("Deepgram API key is not configured.");
+  }
+  if (!groqApiKey) {
+    throw new Error("Groq API key is not configured.");
   }
 
   const deepgram = createClient(deepgramApiKey);
@@ -20,7 +24,8 @@ export async function getTranscription(formData: FormData) {
   const buffer = Buffer.from(await file.arrayBuffer());
 
   try {
-    const { result, error } = await deepgram.listen.prerecorded.transcribeFile(
+    // 1. Get transcription from Deepgram
+    const { result, error: deepgramError } = await deepgram.listen.prerecorded.transcribeFile(
       buffer,
       {
         model: 'nova-3',
@@ -28,50 +33,37 @@ export async function getTranscription(formData: FormData) {
       }
     );
 
-    if (error) {
-      console.error("Deepgram transcription error:", JSON.stringify(error, null, 2));
-      throw new Error(error.message || 'Transcription service returned an error.');
+    if (deepgramError) {
+      console.error("Deepgram transcription error:", JSON.stringify(deepgramError, null, 2));
+      throw new Error(deepgramError.message || 'Transcription service returned an error.');
     }
 
-    if (result) {
-      const transcript = result.results.channels[0].alternatives[0].transcript;
-      if (transcript) {
-        return transcript;
-      }
+    const transcript = result?.results.channels[0].alternatives[0].transcript || '';
+
+    if (!transcript) {
+      // If transcription is empty, no need to call Groq
+      return { transcript: '', analysis: null };
     }
-    
-    // If we get here, it means transcription result was empty.
-    return '';
+
+    // 2. Immediately analyze the transcript with Groq
+    try {
+      const analysis = await analyzeTaskDetails({ taskDescription: transcript });
+      return { transcript, analysis };
+    } catch (analysisError) {
+      console.error("Error analyzing task:", analysisError);
+      if (analysisError instanceof Error) {
+        throw new Error(`Task analysis failed: ${analysisError.message}`);
+      }
+      throw new Error("Task analysis failed with an unknown error.");
+    }
 
   } catch (error) {
-    console.error("Error during transcription:", error);
+    console.error("Error during voice command processing:", error);
     if (error instanceof Error) {
-        // Re-throw the actual error message
         throw new Error(error.message);
     }
-    // Fallback error
-    throw new Error("An unknown error occurred during transcription.");
+    throw new Error("An unknown error occurred during voice command processing.");
   }
-}
-
-export async function analyzeTask(taskDescription: string): Promise<AnalyzeTaskDetailsOutput | null> {
-    if (!taskDescription) return null;
-    
-    if (!process.env.GROQ_API_KEY) {
-        throw new Error("Groq API key is not configured. Please set the GROQ_API_KEY environment variable in your .env file.");
-    }
-
-    try {
-        const result = await analyzeTaskDetails({ taskDescription });
-        return result;
-    } catch (error) {
-        console.error("Error analyzing task:", error);
-        if (error instanceof Error) {
-            // Re-throw with a more user-friendly message for the UI
-            throw new Error(`Task analysis failed. This could be due to an invalid API key or a network issue.`);
-        }
-        throw new Error("Task analysis failed. An unknown error occurred.");
-    }
 }
 
 

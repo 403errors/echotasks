@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { commandExamples } from "@/app/page";
+import { Flowchart } from "./flowchart";
 
 type InfoDialogProps = {
   isOpen: boolean;
@@ -41,35 +42,41 @@ const techInfo = [
 export function InfoDialog({ isOpen, onOpenChange }: InfoDialogProps) {
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>About EchoTasks</DialogTitle>
           <DialogDescription>
             This application is a demonstration of how voice and AI can create a fluid and intuitive user experience.
           </DialogDescription>
         </DialogHeader>
-        <div className="grid gap-6 py-4">
-            <div>
-                <h3 className="font-semibold mb-2">Core Technologies</h3>
-                <ul className="space-y-3 text-sm text-muted-foreground">
-                    {techInfo.map((tech) => (
-                        <li key={tech.name}>
-                            <strong className="text-foreground">{tech.name}:</strong> {tech.reason}
-                        </li>
-                    ))}
-                </ul>
-            </div>
-            <div>
-                <h3 className="font-semibold mb-2">Example Commands</h3>
-                <ScrollArea className="h-48 w-full rounded-md border p-4">
-                    <ul className="space-y-2 text-sm">
-                        {commandExamples.map((cmd, index) => (
-                            <li key={index}>- "{cmd}"</li>
+        <ScrollArea className="max-h-[70vh] pr-4">
+            <div className="grid gap-8 py-4">
+                <div>
+                    <h3 className="font-semibold mb-4 text-lg">Application Flow</h3>
+                    <Flowchart />
+                </div>
+                <div>
+                    <h3 className="font-semibold mb-2">Core Technologies</h3>
+                    <ul className="space-y-3 text-sm text-muted-foreground">
+                        {techInfo.map((tech) => (
+                            <li key={tech.name}>
+                                <strong className="text-foreground">{tech.name}:</strong> {tech.reason}
+                            </li>
                         ))}
                     </ul>
-                </ScrollArea>
+                </div>
+                <div>
+                    <h3 className="font-semibold mb-2">Example Commands</h3>
+                    <ScrollArea className="h-48 w-full rounded-md border p-4">
+                        <ul className="space-y-2 text-sm">
+                            {commandExamples.map((cmd, index) => (
+                                <li key={index}>- "{cmd}"</li>
+                            ))}
+                        </ul>
+                    </ScrollArea>
+                </div>
             </div>
-        </div>
+        </ScrollArea>
       </DialogContent>
     </Dialog>
   );

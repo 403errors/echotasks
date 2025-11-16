@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState, useEffect } from "react";
@@ -30,14 +31,14 @@ type EditTaskDialogProps = {
 export function EditTaskDialog({ task, onOpenChange, onUpdate }: EditTaskDialogProps) {
   const [text, setText] = useState(task.text);
   const [priority, setPriority] = useState(task.priority);
-  const [dueDate, setDueDate] = useState(task.dueDate || "");
-  const [location, setLocation] = useState(task.location || "");
+  const [dueDate, setDueDate] = useState(task.dueDate ?? "");
+  const [location, setLocation] = useState(task.location ?? "");
 
   useEffect(() => {
     setText(task.text);
     setPriority(task.priority);
-    setDueDate(task.dueDate || "");
-    setLocation(task.location || "");
+    setDueDate(task.dueDate ?? "");
+    setLocation(task.location ?? "");
   }, [task]);
 
   const handleSave = () => {
@@ -47,6 +48,7 @@ export function EditTaskDialog({ task, onOpenChange, onUpdate }: EditTaskDialogP
       priority,
       dueDate: dueDate || null,
       location: location || null,
+      lastUpdated: new Date().toISOString(),
     };
     onUpdate(updatedTask);
     onOpenChange(false);

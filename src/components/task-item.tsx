@@ -1,3 +1,4 @@
+
 "use client";
 
 import type { Task } from '@/types';
@@ -72,8 +73,7 @@ export function TaskItem({ task, onToggle, onDelete, onEdit }: TaskItemProps) {
   
   return (
     <div className={cn(
-      "w-full transition-all duration-200 hover:bg-white/5 rounded-lg",
-      task.dueDate && "bg-blue-500/5"
+      "w-full transition-all duration-200 hover:bg-white/5 rounded-lg"
       )}>
       <div className="p-4 flex items-start gap-4">
         <Checkbox

@@ -5,7 +5,7 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useTasks } from '@/lib/hooks/use-tasks';
 import { VoiceRecorder, VoiceRecorderRef } from '@/components/voice-recorder';
 import { TaskList } from '@/components/task-list';
-import { getTranscription, analyzeTask } from '@/app/actions';
+import { processVoiceCommand } from '@/app/actions';
 import { useToast } from "@/hooks/use-toast";
 import { LoaderCircle, ArrowDownUp, Undo2, Info } from 'lucide-react';
 import { Card } from '@/components/ui/card';
@@ -315,15 +315,13 @@ export default function Home() {
       const formData = new FormData();
       formData.append('audio', audioBlob, 'recording.webm');
       
-      const transcript = await getTranscription(formData);
+      const { transcript, analysis } = await processVoiceCommand(formData);
 
       if (!transcript) {
         toast({ variant: "destructive", title: "Couldn't hear anything" });
         return;
       }
       
-      const analysis = await analyzeTask(transcript);
-
       if (!analysis || !analysis.intent || analysis.intent === 'UNKNOWN') {
         toast({ variant: "destructive", title: "Could not understand command" });
         return;

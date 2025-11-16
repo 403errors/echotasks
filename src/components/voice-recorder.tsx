@@ -177,6 +177,7 @@ export const VoiceRecorder = forwardRef<VoiceRecorderRef, VoiceRecorderProps>(
                 'focus-visible:ring-4 focus-visible:ring-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background',
                 isRecording && 'bg-red-500 hover:bg-red-600 animate-pulse'
             )}
+            style={isRecording ? { animationDuration: '1.33s' } : {}}
             aria-label={isRecording ? 'Stop Recording' : 'Start Recording'}
             >
             {isRecording ? (

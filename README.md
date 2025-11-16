@@ -12,7 +12,7 @@ This application demonstrates a powerful "voice-first" user interface. Instead o
 
 - **Voice-First Interface**: Manage your entire to-do list using natural language commands.
 - **Real-Time Transcription**: Blazing-fast and accurate speech-to-text powered by Deepgram's Nova-3 model.
-- **AI-Powered Command Analysis**: Groq's `qwen/qwen3-32b` model intelligently understands your intent (e.g., adding, deleting, updating) and extracts key details like task names, due dates, priorities, and more.
+- **AI-Powered Command Analysis**: Groq's `qwen/qwen3-32b` model intelligently understands your intent (e.g., adding, deleting, updating) and extracts key details like task names, due dates, and more.
 - **Undo Functionality**: Accidentally deleted a task? No problem. An undo button appears for 10 seconds after most actions, allowing you to revert changes with a single click.
 - **Manual Task Editing**: While voice is powerful, sometimes you just need to type. A full editing dialog allows you to manually change a task's text, priority, due date, and location.
 - **Safety Confirmations**: For destructive actions like deleting multiple tasks at once ("delete all high priority tasks"), the app asks for confirmation to prevent accidental data loss.
@@ -31,13 +31,18 @@ This application demonstrates a powerful "voice-first" user interface. Instead o
 The magic of EchoTasks lies in its sophisticated, multi-stage pipeline that turns your voice into action in under a second.
 
 1.  **Voice Capture**: The user holds the microphone button or the spacebar. The browser captures the audio using the `MediaRecorder` API.
-2.  **Real-Time Transcription**: The recorded audio blob is sent to a Next.js Server Action, which forwards it to the **Deepgram** API. Deepgram's Nova-3 model transcribes the audio into text with high accuracy and low latency.
-3.  **AI Command Analysis**: The transcribed text is then sent to another Server Action. This action calls a custom function that queries **Groq's `qwen/qwen3-32b` model**. A carefully engineered system prompt instructs the AI to analyze the text and return a structured JSON object containing the user's `intent` (e.g., `ADD_TASK`, `DELETE_TASK`) and any relevant `entities` (task names, filters, updates).
-4.  **Client-Side Heuristics (Parallel Process)**: While the AI is processing, the original transcript is also analyzed on the client-side for quick metadata detection. This includes:
-    *   **Priority Detection**: A local model scores the urgency of a new task.
-    *   **Date Parsing**: `chrono-node` parses natural language dates ("by next Friday").
-    *   **Location Detection**: A heuristic model picks up on location keywords.
-5.  **State Update & UI Render**: The client receives the structured data from the AI. Based on the `intent`, it performs the appropriate action on the task list (adding, deleting, etc.), using the extracted entities. The UI updates instantly and optimistically, with smooth animations powered by Framer Motion.
+2.  **Single Server Action**: The recorded audio blob is sent to a single, unified Next.js Server Action. This is the only network trip from the client to the server for a single command.
+3.  **Server-Side AI Chaining**:
+    *   The server action receives the audio and immediately forwards it to the **Deepgram API (Nova-3)** to get a text transcription.
+    *   As soon as the transcript is received, the server *immediately* sends that text to **Groq's `qwen/qwen3-32b` model** for intent analysis.
+4.  **Combined Response**: The server sends a single response back to the client containing both the original `transcript` and the structured `analysis` from the AI.
+5.  **Client-Side Heuristics & UI Update**:
+    *   The client receives the combined response.
+    *   It uses the `transcript` to run fast, local heuristics for priority and date detection (e.g., parsing "tomorrow").
+    *   It uses the `analysis` object to perform the correct action (add, delete, etc.).
+    *   The UI updates instantly and optimistically, with smooth animations.
+
+This optimized flow eliminates unnecessary network round-trips by performing the AI calls back-to-back on the server, significantly reducing latency.
 
 ## Client-Side Priority Logic Explained
 
@@ -64,6 +69,7 @@ The primary goal of EchoTasks is to feel instantaneous.
 - **Latency**: The entire process, from the moment you stop speaking to the UI updating, typically takes between **500ms and 1 second**. This low latency is achieved by:
     - Using Deepgram's hyper-fast transcription service.
     - Leveraging the speed of Groq's models for quick analysis.
+    - Chaining the AI calls on the server to minimize network round-trips.
     - Performing non-critical metadata detection (like priority) on the client side.
 
 - **Accuracy**: The application's accuracy is a product of its layered approach:
