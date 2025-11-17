@@ -35,7 +35,15 @@ import { ProTipDialog } from '@/components/pro-tip-dialog';
 
 type SortOption = 'creationDate' | 'dueDate' | 'lastUpdated' | 'priorityHighToLow' | 'priorityLowToHigh';
 
-const priorityOrder: Record<string, number> = { high: 1, medium: 2, low: 3 };
+const priorityOrder: Record<string, number> = { high: 1, medium: 2, low: 3, default: 4 };
+
+const sortLabels: Record<SortOption, string> = {
+  creationDate: "Date Created",
+  dueDate: "Due Date",
+  lastUpdated: "Last Updated",
+  priorityHighToLow: "Priority (High-Low)",
+  priorityLowToHigh: "Priority (Low-High)",
+};
 
 function formatDate(date: Date) {
   const year = date.getFullYear();
@@ -103,6 +111,7 @@ function AnimatedSuggestions() {
 }
 
 export default function Home() {
+  const [sortOption, setSortOption] = useState<SortOption>('creationDate');
   const { 
     tasks, 
     addTask, 
@@ -116,10 +125,9 @@ export default function Home() {
     revertLastAction, 
     clearLastAction, 
     deleteOverdueTasks 
-  } = useTasks();
+  } = useTasks(sortOption);
   const [isProcessing, setIsProcessing] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
-  const [sortOption, setSortOption] = useState<SortOption>('creationDate');
   const [isInfoDialogOpen, setIsInfoDialogOpen] = useState(false);
   const [isProTipOpen, setIsProTipOpen] = useState(false);
   const { settings } = useSettings();
@@ -209,93 +217,11 @@ export default function Home() {
     toast({ title: "Action reverted" });
   };
 
-  const getFilteredTaskIds = (filter: AnalyzeTaskDetailsOutput['filter']): string[] => {
-    if (!filter) return [];
-
-    let filteredTasks = [...tasks];
-
-    if (filter.status) {
-        filteredTasks = filteredTasks.filter(t => t.completed === (filter.status === 'completed'));
-    }
-
-    if (filter.priority && filter.priority.length > 0) {
-        // If a position is also specified, ignore the priority filter for positional updates.
-        // This prevents "update first task to low priority" from updating all high priority tasks.
-        if (!filter.positions || filter.positions.length === 0) {
-            const prioritySet = new Set(filter.priority);
-            filteredTasks = filteredTasks.filter(t => t.priority && prioritySet.has(t.priority));
-        }
-    }
-
-    // After other filters, apply position filter
-    if (filter.positions && filter.positions.length > 0) {
-        const indices = new Set<number>();
-        const taskCount = filteredTasks.length;
-
-        filter.positions.forEach(pos => {
-            if (pos === 'last') {
-                if (taskCount > 0) indices.add(taskCount - 1);
-            } else if (typeof pos === 'number' && pos > 0 && pos <= taskCount) {
-                indices.add(pos - 1);
-            }
-        });
-        
-        // This maps the filtered indices back to the original unfiltered tasks array
-        const finalTasks: Task[] = [];
-        const filteredTaskIds = new Set(filteredTasks.map(t => t.id));
-        const allTasksInOrder = sortedTasks.filter(t => filteredTaskIds.has(t.id));
-
-        indices.forEach(index => {
-          if(allTasksInOrder[index]) {
-            finalTasks.push(allTasksInOrder[index])
-          }
-        });
-        return finalTasks.map(t => t.id);
-    }
-    
-    return filteredTasks.map(t => t.id);
-  };
-  
   const sortedTasks = useMemo(() => {
     let tasksCopy = [...tasks];
     
-    switch (sortOption) {
-      case 'dueDate':
-        tasksCopy = tasksCopy.sort((a, b) => {
-          const aDate = a.dueDate ? new Date(a.dueDate + 'T00:00:00').getTime() : Infinity;
-          const bDate = b.dueDate ? new Date(b.dueDate + 'T00:00:00').getTime() : Infinity;
-          const now = new Date();
-          now.setHours(0,0,0,0);
-          const today = now.getTime();
-          
-          const aIsPast = aDate < today;
-          const bIsPast = bDate < today;
-
-          if(aIsPast && !bIsPast) return -1;
-          if(!aIsPast && bIsPast) return 1;
-
-          if (aDate === Infinity && bDate === Infinity) return 0;
-          if (aDate === Infinity) return 1;
-          if (bDate === Infinity) return -1;
-            
-          return aDate - bDate;
-        });
-        break;
-      case 'priorityHighToLow':
-        tasksCopy = tasksCopy.sort((a, b) => (priorityOrder[a.priority] || 4) - (priorityOrder[b.priority] || 4));
-        break;
-      case 'priorityLowToHigh':
-        tasksCopy = tasksCopy.sort((a, b) => (priorityOrder[b.priority] || 4) - (priorityOrder[a.priority] || 4));
-        break;
-      case 'lastUpdated':
-         tasksCopy = tasksCopy.sort((a, b) => new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime());
-        break;
-      case 'creationDate':
-      default:
-        tasksCopy = tasksCopy.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-        break;
-    }
-
+    // The actual sorting logic is now handled inside the useTasks hook
+    // This useMemo is now only responsible for the completed tasks filter
     if (settings.moveCompletedToBottom) {
       const completed = tasksCopy.filter(t => t.completed);
       const incomplete = tasksCopy.filter(t => !t.completed);
@@ -304,8 +230,83 @@ export default function Home() {
     
     return tasksCopy;
 
-  }, [tasks, sortOption, settings.moveCompletedToBottom]);
+  }, [tasks, settings.moveCompletedToBottom]);
 
+
+  const getFilteredTaskIds = (
+    filter: AnalyzeTaskDetailsOutput['actions'][0]['filter']
+  ): string[] => {
+    if (!filter) return [];
+
+    let filteredTasksForPositions = [...sortedTasks];
+    let filteredTasksForAttributes = [...tasks];
+
+    // Handle attribute filters first on the original task list
+    if (filter.text) {
+        filteredTasksForAttributes = filteredTasksForAttributes.filter(t => t.text.toLowerCase().includes(filter.text!.toLowerCase()));
+    }
+    
+    if (filter.dueDate) {
+        const query = filter.dueDate.toLowerCase();
+        const parsedDateRange = chrono.parse(query);
+
+        if (parsedDateRange.length > 0) {
+            const { start, end } = parsedDateRange[0];
+            const startDate = start.date();
+            const endDate = end ? end.date() : new Date(startDate.getTime() + 24 * 60 * 60 * 1000 - 1);
+
+            filteredTasksForAttributes = filteredTasksForAttributes.filter(task => {
+                if (!task.dueDate) return false;
+                const taskDueDate = new Date(task.dueDate);
+                return taskDueDate >= startDate && taskDueDate <= endDate;
+            });
+        }
+    }
+    
+    if (filter.status) {
+        filteredTasksForAttributes = filteredTasksForAttributes.filter(t => t.completed === (filter.status === 'completed'));
+    }
+    
+    if (filter.priority && filter.priority.length > 0) {
+        const prioritySet = new Set(filter.priority);
+        filteredTasksForAttributes = filteredTasksForAttributes.filter(t => t.priority && prioritySet.has(t.priority));
+    }
+
+
+    if (filter.positions && filter.positions.length > 0) {
+        const indices = new Set<number>();
+        const taskCount = filteredTasksForPositions.length;
+
+        filter.positions.forEach(pos => {
+            if (pos === 'last') {
+                if (taskCount > 0) indices.add(taskCount - 1);
+            } else if (pos === 'second last') {
+                if (taskCount > 1) indices.add(taskCount - 2);
+            } else if (pos === 'odd') {
+                for (let i = 0; i < taskCount; i += 2) indices.add(i);
+            } else if (pos === 'even') {
+                for (let i = 1; i < taskCount; i += 2) indices.add(i);
+            } else if (pos === 'all') {
+                for (let i = 0; i < taskCount; i++) indices.add(i);
+            } else if (typeof pos === 'number' && pos > 0 && pos <= taskCount) {
+                indices.add(pos - 1);
+            } else if (typeof pos === 'object' && 'start' in pos && 'end' in pos) {
+                const start = pos.start < 0 ? taskCount + pos.start : pos.start - 1;
+                const end = pos.end < 0 ? taskCount + pos.end : pos.end - 1;
+                for (let i = start; i <= end; i++) {
+                    if (i >= 0 && i < taskCount) {
+                        indices.add(i);
+                    }
+                }
+            }
+        });
+        
+        return Array.from(indices).map(index => filteredTasksForPositions[index].id);
+    }
+    
+    return filteredTasksForAttributes.map(t => t.id);
+};
+  
   const handleRecordingComplete = async (audioBlob: Blob) => {
     setIsProcessing(true);
     try {
@@ -322,182 +323,220 @@ export default function Home() {
         return;
       }
       
-      if (!analysis || !analysis.intent || analysis.intent === 'UNKNOWN') {
+      if (!analysis || !analysis.actions || analysis.actions.length === 0 || analysis.actions.every(a => a.intent === 'UNKNOWN')) {
         toast({ variant: "destructive", title: "Could not understand command" });
         return;
       }
+      
+      let summary = { added: 0, updated: 0, deleted: 0, completed: 0, uncompleted: 0, sorted: false, shown: false, unknown: 0 };
 
-      switch (analysis.intent) {
-        case 'ADD_TASK': {
-          if (!analysis.tasks || analysis.tasks.length === 0) {
-            toast({ variant: "destructive", title: "No task description found" });
-            break;
-          }
-          const priorityResult = await detectPriorityFast(transcript);
-          const priority = priorityResult.priority === 'none' ? 'medium' : priorityResult.priority;
-          const parsedDate = chrono.parseDate(transcript, new Date(), { forwardDate: true });
-          
-          analysis.tasks.forEach(taskInfo => {
-            addTask({
-                text: taskInfo.text,
-                priority: priority,
-                dueDate: parsedDate ? formatDate(parsedDate) : null,
-                location: taskInfo.location || null,
-            });
-          });
-
-          toast({ title: `Added ${analysis.tasks.length} task(s)`, description: analysis.tasks.map(t => t.text).join(', ') });
-          break;
-        }
-
-        case 'DELETE_TASK': {
-          const idsToDelete = getFilteredTaskIds(analysis.filter);
-          if (idsToDelete.length === 0) {
-            toast({ variant: "destructive", title: "Task not found" });
-            break;
-          }
-
-          const onConfirm = () => {
-            idsToDelete.forEach(id => deleteTask(id));
-            toast({ title: "Task(s) Deleted", description: `Removed ${idsToDelete.length} task(s).` });
-          };
-
-          if (idsToDelete.length > 1) {
-            setConfirmationState({
-              isOpen: true,
-              title: `Delete ${idsToDelete.length} tasks?`,
-              description: "This action cannot be undone, but you can use the undo button afterward.",
-              onConfirm,
-            });
-          } else {
-            onConfirm();
-          }
-          break;
-        }
-        
-        case 'DELETE_OVERDUE': {
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            const overdueCount = tasks.filter(t => t.dueDate && new Date(t.dueDate).getTime() < today.getTime() && !t.completed).length;
-
-            if (overdueCount === 0) {
-                toast({ title: "No Overdue Tasks", description: "You have no overdue tasks to delete." });
-                return;
+      for (const action of analysis.actions) {
+        switch (action.intent) {
+          case 'ADD_TASK': {
+            if (!action.tasks || action.tasks.length === 0) {
+              summary.unknown++;
+              continue;
             }
+            // Use client-side detection only if AI doesn't provide it
+            const priorityResult = await detectPriorityFast(transcript);
+            const defaultPriority = priorityResult.priority === 'none' ? 'medium' : priorityResult.priority;
+            const defaultParsedDate = chrono.parseDate(transcript, new Date(), { forwardDate: true });
             
+            action.tasks.forEach(taskInfo => {
+              const taskDueDate = taskInfo.dueDate ? chrono.parseDate(taskInfo.dueDate, new Date(), { forwardDate: true }) : defaultParsedDate;
+              addTask({
+                  text: taskInfo.text,
+                  priority: taskInfo.priority || defaultPriority,
+                  dueDate: taskDueDate ? formatDate(taskDueDate) : null,
+                  location: taskInfo.location || null,
+              });
+              summary.added++;
+            });
+            break;
+          }
+
+          case 'DELETE_TASK': {
+            const idsToDelete = getFilteredTaskIds(action.filter);
+            if (idsToDelete.length === 0) {
+              summary.unknown++;
+              continue;
+            }
+
             const onConfirm = () => {
-                const deletedCount = deleteOverdueTasks();
-                toast({ title: "Overdue Tasks Deleted", description: `Removed ${deletedCount} overdue task(s).` });
+              idsToDelete.forEach(id => deleteTask(id));
+              summary.deleted += idsToDelete.length;
+              toast({ title: "Task(s) Deleted", description: `Removed ${idsToDelete.length} task(s).` });
             };
 
-            setConfirmationState({
-              isOpen: true,
-              title: `Delete ${overdueCount} overdue task(s)?`,
-              description: "This action cannot be undone, but you can use the undo button afterward.",
-              onConfirm,
-            });
-            break;
-        }
-
-        case 'MARK_COMPLETED': {
-          const idsToComplete = getFilteredTaskIds(analysis.filter);
-          if (idsToComplete.length === 0) {
-            toast({ variant: "destructive", title: "Task not found" });
+            if (idsToDelete.length > 1) {
+              setConfirmationState({
+                isOpen: true,
+                title: `Delete ${idsToDelete.length} tasks?`,
+                description: "This action cannot be undone, but you can use the undo button afterward.",
+                onConfirm,
+              });
+            } else {
+              onConfirm();
+            }
             break;
           }
-          completeTasks(idsToComplete, true);
-          toast({ title: "Task(s) Completed", description: `Marked ${idsToComplete.length} task(s) as done.` });
-          break;
-        }
-        
-        case 'UPDATE_TASK': {
-          const idsToUpdate = getFilteredTaskIds(analysis.filter);
-          if (idsToUpdate.length === 0 || !analysis.updates) {
-             toast({ variant: "destructive", title: "Task not found or no update specified" });
-             break;
+          
+          case 'DELETE_OVERDUE': {
+              const today = new Date();
+              today.setHours(0, 0, 0, 0);
+              const overdueCount = tasks.filter(t => t.dueDate && new Date(t.dueDate).getTime() < today.getTime() && !t.completed).length;
+
+              if (overdueCount === 0) {
+                  toast({ title: "No Overdue Tasks", description: "You have no overdue tasks to delete." });
+                  continue;
+              }
+              
+              const onConfirm = () => {
+                  const deletedCount = deleteOverdueTasks();
+                  summary.deleted += deletedCount;
+                  toast({ title: "Overdue Tasks Deleted", description: `Removed ${deletedCount} overdue task(s).` });
+              };
+
+              setConfirmationState({
+                isOpen: true,
+                title: `Delete ${overdueCount} overdue task(s)?`,
+                description: "This action cannot be undone, but you can use the undo button afterward.",
+                onConfirm,
+              });
+              break;
           }
-          idsToUpdate.forEach(id => updateTask(id, analysis.updates!));
-          toast({ title: "Task(s) Updated", description: `Updated ${idsToUpdate.length} task(s).` });
-          break;
-        }
-        
-        case 'SORT_BY': {
-            if (analysis.sortOption) {
-                setSortOption(analysis.sortOption);
-                toast({ title: "List Sorted", description: `Tasks sorted by ${analysis.sortOption.replace(/([A-Z])/g, ' $1')}.` });
-            } else {
-                toast({ variant: "destructive", title: "Sort option not recognized" });
+
+          case 'MARK_COMPLETED': {
+            const idsToComplete = getFilteredTaskIds(action.filter);
+            if (idsToComplete.length === 0) {
+              summary.unknown++;
+              continue;
             }
+            completeTasks(idsToComplete, true);
+            summary.completed += idsToComplete.length;
+            break;
+          }
+          
+          case 'MARK_INCOMPLETE': {
+            const idsToUncomplete = getFilteredTaskIds(action.filter);
+            if (idsToUncomplete.length === 0) {
+                summary.unknown++;
+                continue;
+            }
+            completeTasks(idsToUncomplete, false);
+            summary.uncompleted += idsToUncomplete.length;
+            break;
+          }
+
+          case 'UPDATE_TASK': {
+            const idsToUpdate = getFilteredTaskIds(action.filter);
+            if (idsToUpdate.length === 0 || !action.updates) {
+               summary.unknown++;
+               continue;
+            }
+            idsToUpdate.forEach(id => updateTask(id, action.updates!));
+            summary.updated += idsToUpdate.length;
+            break;
+          }
+          
+          case 'SORT_BY': {
+              if (action.sortOption) {
+                  setSortOption(action.sortOption);
+                  summary.sorted = true;
+              } else {
+                  summary.unknown++;
+              }
+              break;
+          }
+
+          case 'SHOW_TASKS': {
+              if (!action.filter) {
+                  summary.unknown++;
+                  break;
+              }
+              
+              const filtered = getFilteredTaskIds(action.filter).map(id => tasks.find(t => t.id === id)).filter(Boolean) as Task[];
+              
+              const getQueryDescription = () => {
+                if (analysis.originalQuery) {
+                    return `"${analysis.originalQuery}"`;
+                }
+                if (action.filter?.text) {
+                    return `tasks containing "${action.filter.text}"`;
+                }
+                if (action.filter?.dueDate) {
+                    return `tasks for "${action.filter.dueDate}"`;
+                }
+                return "your search";
+              };
+
+              const queryDescription = getQueryDescription();
+
+              if (filtered.length === 0) {
+                  toast({ title: "No tasks found", description: `No tasks match ${queryDescription}.` });
+              } else {
+                  setFilteredTasksState({
+                      isOpen: true,
+                      title: `Tasks matching ${queryDescription}`,
+                      tasks: filtered
+                  });
+                  summary.shown = true;
+              }
+              break;
+          }
+
+          case 'DELETE_ALL': {
+              if (tasks.length === 0) {
+                  toast({ title: "No Tasks to Delete", description: "Your to-do list is already empty." });
+                  continue;
+              }
+              const onConfirm = () => {
+                  deleteAllTasks();
+                  toast({ title: "All Tasks Deleted", description: "Your to-do list is clear!" });
+              }
+
+              setConfirmationState({
+                isOpen: true,
+                title: `Delete all ${tasks.length} tasks?`,
+                description: "This action cannot be undone, but you can use the undo button afterward.",
+                onConfirm,
+              });
+              break;
+          }
+
+          default:
+            summary.unknown++;
             break;
         }
+      }
+      
+      // Generate a summary toast if not handled by individual actions
+      let summaryParts = [];
+      if(summary.added > 0) summaryParts.push(`Added ${summary.added}`);
+      if(summary.updated > 0) summaryParts.push(`Updated ${summary.updated}`);
+      if(summary.deleted > 0) summaryParts.push(`Deleted ${summary.deleted}`);
+      if(summary.completed > 0) summaryParts.push(`Completed ${summary.completed}`);
+      if(summary.uncompleted > 0) summaryParts.push(`Un-completed ${summary.uncompleted}`);
+      if(summary.sorted) summaryParts.push(`Sorted list`);
 
-        case 'SHOW_TASKS': {
-            const query = analysis.searchQuery?.toLowerCase();
-            if (!query) {
-                toast({ variant: "destructive", title: "No search criteria found" });
-                break;
-            }
-
-            const parsedDateRange = chrono.parse(query);
-            let filtered: Task[] = [];
-            
-            if (parsedDateRange.length > 0) {
-                // Date range query
-                const { start, end } = parsedDateRange[0];
-                const startDate = start.date();
-                const endDate = end ? end.date() : new Date(startDate.getTime() + 24 * 60 * 60 * 1000 -1);
-
-                filtered = tasks.filter(task => {
-                    if (!task.dueDate) return false;
-                    const taskDueDate = new Date(task.dueDate);
-                    return taskDueDate >= startDate && taskDueDate <= endDate;
-                });
-            } else {
-                // Keyword query
-                filtered = tasks.filter(task => task.text.toLowerCase().includes(query));
-            }
-
-
-            if (filtered.length === 0) {
-                toast({ title: "No tasks found", description: `No tasks match your search for "${query}".` });
-            } else {
-                setFilteredTasksState({
-                    isOpen: true,
-                    title: `Tasks matching "${query}"`,
-                    tasks: filtered
-                });
-            }
-            break;
-        }
-
-        case 'DELETE_ALL': {
-            if (tasks.length === 0) {
-                toast({ title: "No Tasks to Delete", description: "Your to-do list is already empty." });
-                return;
-            }
-            const onConfirm = () => {
-                deleteAllTasks();
-                toast({ title: "All Tasks Deleted", description: "Your to-do list is clear!" });
-            }
-
-            setConfirmationState({
-              isOpen: true,
-              title: `Delete all ${tasks.length} tasks?`,
-              description: "This action cannot be undone, but you can use the undo button afterward.",
-              onConfirm,
-            });
-            break;
-        }
-
-        default:
-          toast({ variant: "destructive", title: "Could not perform action" });
-          break;
+      if (summaryParts.length > 0) {
+          toast({ title: "Actions Performed", description: summaryParts.join(', ') + '.' });
+      } else if (summary.unknown > 0 && !summary.shown) {
+          toast({ variant: "destructive", title: "Some parts of the command were not understood." });
       }
 
     } catch (error) {
       console.error(error);
-      const description = error instanceof Error ? error.message : "Please try again.";
-      toast({ variant: "destructive", title: "An error occurred", description });
+      const errorMessage = error instanceof Error ? error.message : "Please try again.";
+      if (typeof errorMessage === 'string' && errorMessage.includes('corrupt or unsupported data')) {
+          toast({
+              variant: "destructive",
+              title: "Audio Unclear",
+              description: "Audio was unclear or corrupt. Please try speaking again, perhaps a bit closer to your microphone."
+          });
+      } else {
+          toast({ variant: "destructive", title: "An error occurred", description: errorMessage });
+      }
     } finally {
       setIsProcessing(false);
     }
@@ -583,9 +622,11 @@ export default function Home() {
                 </div>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="outline">
-                      <ArrowDownUp className="mr-2 h-4 w-4" />
-                      Sort By
+                    <Button variant="outline" className="w-48 justify-start">
+                        <ArrowDownUp className="mr-2 h-4 w-4" />
+                        <span className="truncate">
+                          Sorted by: {sortLabels[sortOption]}
+                        </span>
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent className="w-56">
@@ -650,3 +691,5 @@ export default function Home() {
     </>
   );
 }
+
+    

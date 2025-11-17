@@ -7,6 +7,10 @@ import * as chrono from 'chrono-node';
 
 const STORAGE_KEY = 'echo-tasks';
 
+type SortOption = 'creationDate' | 'dueDate' | 'lastUpdated' | 'priorityHighToLow' | 'priorityLowToHigh';
+const priorityOrder: Record<string, number> = { high: 1, medium: 2, low: 3, default: 4 };
+
+
 type UndoAction =
   | { type: 'delete'; task: Task }
   | { type: 'add'; id: string }
@@ -64,26 +68,69 @@ const createMockTasks = (): Task[] => {
     ]
 }
 
-export function useTasks() {
+const sortTasks = (tasks: Task[], sortOption: SortOption): Task[] => {
+    let tasksCopy = [...tasks];
+    
+    switch (sortOption) {
+      case 'dueDate':
+        tasksCopy.sort((a, b) => {
+            const aDate = a.dueDate ? new Date(a.dueDate) : null;
+            const bDate = b.dueDate ? new Date(b.dueDate) : null;
+            if (!aDate && !bDate) return 0;
+            if (!aDate) return 1;
+            if (!bDate) return -1;
+            return aDate.getTime() - bDate.getTime();
+        });
+        break;
+      case 'priorityHighToLow':
+        tasksCopy.sort((a, b) => (priorityOrder[a.priority] || priorityOrder.default) - (priorityOrder[b.priority] || priorityOrder.default));
+        break;
+      case 'priorityLowToHigh':
+        tasksCopy.sort((a, b) => (priorityOrder[b.priority] || priorityOrder.default) - (priorityOrder[a.priority] || priorityOrder.default));
+        break;
+      case 'lastUpdated':
+         tasksCopy.sort((a, b) => new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime());
+        break;
+      case 'creationDate':
+      default:
+        tasksCopy.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        break;
+    }
+    return tasksCopy;
+}
+
+export function useTasks(sortOption: SortOption) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [isLoaded, setIsLoaded] = useState(false);
   const [lastAction, setLastAction] = useState<UndoAction | null>(null);
 
   useEffect(() => {
     try {
+      let loadedTasks: Task[];
       const storedTasks = localStorage.getItem(STORAGE_KEY);
-      // If tasks are found in storage, parse them. Otherwise, create mock tasks.
       if (storedTasks && JSON.parse(storedTasks).length > 0) {
-        setTasks(JSON.parse(storedTasks));
+        loadedTasks = JSON.parse(storedTasks);
       } else {
-        setTasks(createMockTasks());
+        loadedTasks = createMockTasks();
       }
+      setTasks(sortTasks(loadedTasks, sortOption));
     } catch (error) {
       console.error("Failed to load tasks from localStorage, creating mocks.", error);
-      setTasks(createMockTasks());
+      setTasks(sortTasks(createMockTasks(), sortOption));
     }
     setIsLoaded(true);
-  }, []);
+  }, []); // Load once on mount
+
+  useEffect(() => {
+    if (isLoaded) {
+      try {
+        // Re-sort the tasks whenever the sortOption changes
+        setTasks(prevTasks => sortTasks(prevTasks, sortOption));
+      } catch (error) {
+        console.error("Failed to sort tasks", error);
+      }
+    }
+  }, [sortOption, isLoaded]);
 
   useEffect(() => {
     if (isLoaded) {
@@ -108,9 +155,9 @@ export function useTasks() {
       createdAt: now,
       lastUpdated: now,
     };
-    setTasks((prevTasks) => [newTask, ...prevTasks]);
+    setTasks((prevTasks) => sortTasks([newTask, ...prevTasks], sortOption));
     setLastAction({ type: 'add', id: newTask.id });
-  }, []);
+  }, [sortOption]);
 
   const toggleTask = useCallback((id: string) => {
     const originalTask = tasks.find(t => t.id === id);
@@ -161,11 +208,10 @@ export function useTasks() {
     if(!originalTask) return;
 
     setLastAction({ type: 'update', originalTask });
-    setTasks(prevTasks =>
-      prevTasks.map(task => {
+    setTasks(prevTasks => {
+      const updatedTasks = prevTasks.map(task => {
         if (task.id === id) {
           const newUpdates = { ...updates };
-          // If dueDate is a relative string like "tomorrow", parse it.
           if (typeof newUpdates.dueDate === 'string' && newUpdates.dueDate) {
             const parsedDate = chrono.parseDate(newUpdates.dueDate, new Date(), { forwardDate: true });
             newUpdates.dueDate = parsedDate ? formatDate(parsedDate) : task.dueDate;
@@ -173,9 +219,10 @@ export function useTasks() {
           return { ...task, ...newUpdates, lastUpdated: new Date().toISOString() };
         }
         return task;
-      })
-    );
-  }, [tasks]);
+      });
+      return sortTasks(updatedTasks, sortOption);
+    });
+  }, [tasks, sortOption]);
 
   const completeTasks = useCallback((ids: string[], completed: boolean) => {
     const originalTasks = tasks.filter(t => ids.includes(t.id));
@@ -197,10 +244,11 @@ export function useTasks() {
         setTasks(prev => prev.filter(t => t.id !== lastAction.id));
         break;
       case 'delete':
-        setTasks(prev => [...prev, lastAction.task].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+        setTasks(prev => sortTasks([...prev, lastAction.task], sortOption));
         break;
       case 'update': {
-        setTasks(prev => prev.map(t => t.id === lastAction.originalTask.id ? lastAction.originalTask : t));
+        const revertedTasks = tasks.map(t => t.id === lastAction.originalTask.id ? lastAction.originalTask : t);
+        setTasks(sortTasks(revertedTasks, sortOption));
         break;
       }
       case 'complete-many': {
@@ -209,12 +257,12 @@ export function useTasks() {
         break;
       }
       case 'delete-many':
-        setTasks(prev => [...prev, ...lastAction.tasks].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+        setTasks(prev => sortTasks([...prev, ...lastAction.tasks], sortOption));
         break;
     }
     
     setLastAction(null);
-  }, [lastAction]);
+  }, [lastAction, tasks, sortOption]);
 
 
   return { tasks, addTask, toggleTask, deleteTask, isLoaded, deleteAllTasks, updateTask, completeTasks, lastAction, revertLastAction, clearLastAction, deleteOverdueTasks };

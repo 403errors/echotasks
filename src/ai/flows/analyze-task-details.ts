@@ -4,7 +4,8 @@
 /**
  * @fileOverview A task command analyzer AI agent.
  * This agent detects the user's intent (e.g., ADD_TASK, DELETE_TASK, UPDATE_TASK)
- * and extracts relevant entities from the command.
+ * and extracts relevant entities from the command. It can handle chained and
+ * self-correcting commands by returning a sequence of actions.
  */
 
 import { Groq } from 'groq-sdk';
@@ -17,15 +18,20 @@ export type AnalyzeTaskDetailsInput = {
 type TaskInfo = {
   text: string;
   location?: string | null;
+  priority?: 'high' | 'medium' | 'low';
+  dueDate?: string;
 };
 
-export type AnalyzeTaskDetailsOutput = {
-  intent: 'ADD_TASK' | 'DELETE_TASK' | 'UPDATE_TASK' | 'MARK_COMPLETED' | 'DELETE_ALL' | 'DELETE_OVERDUE' | 'SORT_BY' | 'SHOW_TASKS' | 'UNKNOWN';
-  tasks?: TaskInfo[]; // For ADD_TASK, now an array of objects
+// This represents a single action to be performed.
+type Action = {
+  intent: 'ADD_TASK' | 'DELETE_TASK' | 'UPDATE_TASK' | 'MARK_COMPLETED' | 'MARK_INCOMPLETE' | 'DELETE_ALL' | 'DELETE_OVERDUE' | 'SORT_BY' | 'SHOW_TASKS' | 'UNKNOWN';
+  tasks?: TaskInfo[]; // For ADD_TASK
   filter?: { // For targeting tasks in DELETE, UPDATE, MARK_COMPLETED
-    positions?: (number | 'last')[];
+    positions?: (number | 'last' | 'all' | 'second last' | 'odd' | 'even' | { start: number, end: number })[];
     priority?: ('high' | 'medium' | 'low')[];
     status?: 'completed' | 'incomplete';
+    text?: string; // Filter by text content
+    dueDate?: string; // New: Filter by due date
   };
   updates?: { // For UPDATE_TASK
     text?: string;
@@ -34,79 +40,76 @@ export type AnalyzeTaskDetailsOutput = {
     location?: string;
   };
   sortOption?: 'creationDate' | 'dueDate' | 'lastUpdated' | 'priorityHighToLow' | 'priorityLowToHigh'; // For SORT_BY
-  searchQuery?: string; // For SHOW_TASKS
 };
 
-const systemPrompt = `You are a sophisticated personal task assistant command parser. Your job is to analyze a transcribed voice command and determine the user's intent and the entities associated with that intent.
+// The top-level output is an object containing an array of actions.
+export type AnalyzeTaskDetailsOutput = {
+  actions: Action[];
+  originalQuery?: string; // We'll keep the original query for display purposes
+};
+
+
+const systemPrompt = `You are a sophisticated personal task assistant command parser. Your job is to analyze a transcribed voice command, decompose it into a sequence of individual actions, and represent this sequence in a JSON object. Your output MUST be a JSON object with a single key "actions", which is an array of action objects.
+
+- Handle chained commands by creating a separate action object for each distinct command.
+- Handle self-corrections (e.g., "no wait," "actually," "scratch that") by ignoring the corrected part and only processing the final intention.
+- Each action object in the array must have a valid "intent". If you cannot understand a part of the command, you can use "UNKNOWN".
+- For ADD_TASK intents, each task in the "tasks" array can have its own priority and due date. Parse them individually.
+- For location extraction in ADD_TASK, treat proper nouns like city names (e.g., "we will go to the jaipur tomorrow") as a location.
+- For SHOW_TASKS intents, you MUST determine if the user is searching by date/time or by text. Return a 'filter' object with either a 'dueDate' key (e.g., "this week", "today") or a 'text' key. Do not use 'searchQuery'.
+- Also for SHOW_TASKS, include the original search phrase in the top-level 'originalQuery' field.
+- For SORT_BY intents, you must return a 'sortOption' with one of the following values: 'creationDate', 'dueDate', 'lastUpdated', 'priorityHighToLow', 'priorityLowToHigh'.
 
 Your output MUST be a JSON object with the following structure:
 {
-  "intent": "ADD_TASK" | "DELETE_TASK" | "UPDATE_TASK" | "MARK_COMPLETED" | "DELETE_ALL" | "DELETE_OVERDUE" | "SORT_BY" | "SHOW_TASKS" | "UNKNOWN",
-  "tasks": [{ "text": "string", "location": "string" | null }, ...],
-  "filter": {
-    "positions": ["last" | number],
-    "priority": ["high" | "medium" | "low"],
-    "status": "completed" | "incomplete"
-  },
-  "updates": {
-    "text": "string",
-    "priority": "high" | "medium" | "low",
-    "dueDate": "string, e.g., 'tomorrow', 'next Friday'",
-    "location": "string"
-  },
-  "sortOption": "creationDate" | "dueDate" | "lastUpdated" | "priorityHighToLow" | "priorityLowToHigh",
-  "searchQuery": "string"
+  "actions": [
+    {
+      "intent": "ADD_TASK" | "DELETE_TASK" | "UPDATE_TASK" | "MARK_COMPLETED" | "MARK_INCOMPLETE" | "DELETE_ALL" | "DELETE_OVERDUE" | "SORT_BY" | "SHOW_TASKS" | "UNKNOWN",
+      "tasks": [{ "text": "string", "location": "string" | null, "priority": "high" | "medium" | "low", "dueDate": "string" | null }, ...],
+      "filter": {
+        "positions": [...],
+        "priority": [...],
+        "status": "...",
+        "text": "string",
+        "dueDate": "string"
+      },
+      "updates": { ... },
+      "sortOption": "..."
+    },
+    ...
+  ],
+  "originalQuery": "string"
 }
 
-- "intent": The primary action.
-- "tasks": For ADD_TASK, an array of objects. Each object must have a "text" property. The "location" property should be extracted ONLY if it's a physical place (e.g., 'home', 'office', 'the bank') where the task can be done. The subject of a task (like 'groceries') is NOT a location. If no location is mentioned, it must be null.
-- "filter": Specifies which tasks to target.
-  - "positions": 1-based indices. Recognize ordinals ("first", "second") and relative terms ("last", "final").
-  - "priority": An array of priorities to filter by.
-  - "status": Filter by whether tasks are done or not.
-- "updates": For UPDATE_TASK, specifies what to change. The AI should extract what the new value should be.
-- "sortOption": For SORT_BY, extract the sorting criteria. Map user phrases to the allowed values. e.g., "due date" -> "dueDate", "priority" -> "priorityHighToLow".
-- "searchQuery": For SHOW_TASKS, this should be the keyword or phrase the user wants to filter by (e.g., "administrative", "grocery", "this week").
-
-Examples:
-- Input: "Remind me to buy milk by this Friday and it's super important"
-  Output: { "intent": "ADD_TASK", "tasks": [{ "text": "Buy milk", "location": null }] }
-- Input: "add tasks to walk the dog and buy groceries"
-  Output: { "intent": "ADD_TASK", "tasks": [{ "text": "Walk the dog", "location": null }, { "text": "Buy groceries", "location": null }] }
-- Input: "Call the doctor and buy groceries"
-  Output: { "intent": "ADD_TASK", "tasks": [{ "text": "Call the doctor", "location": null }, { "text": "Buy groceries", "location": null }] }
-- Input: "add a task to call mom at home"
-  Output: { "intent": "ADD_TASK", "tasks": [{ "text": "Call mom", "location": "home" }] }
-- Input: "delete the first to-do"
-  Output: { "intent": "DELETE_TASK", "filter": { "positions": [1] } }
-- Input: "delete the second and last tasks"
-  Output: { "intent": "DELETE_TASK", "filter": { "positions": [2, "last"] } }
-- Input: "complete the final task"
-  Output: { "intent": "MARK_COMPLETED", "filter": { "positions": ["last"] } }
-- Input: "update the last task's date to tomorrow"
-  Output: { "intent": "UPDATE_TASK", "filter": { "positions": ["last"] }, "updates": { "dueDate": "tomorrow" } }
-- Input: "change the first task to high priority"
-  Output: { "intent": "UPDATE_TASK", "filter": { "positions": [1] }, "updates": { "priority": "high" } }
-- Input: "delete all the tasks with high priority"
-  Output: { "intent": "DELETE_TASK", "filter": { "priority": ["high"] } }
-- Input: "update all the medium priority tasks to have due date as tomorrow"
-  Output: { "intent": "UPDATE_TASK", "filter": { "priority": ["medium"] }, "updates": { "dueDate": "tomorrow" } }
-- Input: "clear up my to-dos"
-  Output: { "intent": "DELETE_ALL" }
-- Input: "delete all overdue tasks"
-  Output: { "intent": "DELETE_OVERDUE" }
-- Input: "sort by due date"
-  Output: { "intent": "SORT_BY", "sortOption": "dueDate" }
-- Input: "sort by priority high to low"
-  Output: { "intent": "SORT_BY", "sortOption": "priorityHighToLow" }
-- Input: "show me all administrative tasks"
-  Output: { "intent": "SHOW_TASKS", "searchQuery": "administrative" }
-- Input: "show me my grocery list"
-  Output: { "intent": "SHOW_TASKS", "searchQuery": "grocery" }
-- Input: "what do I have to do this week"
-  Output: { "intent": "SHOW_TASKS", "searchQuery": "this week" }
-- Input: "what's the weather"
-  Output: { "intent": "UNKNOWN" }
+Key Rules & Examples:
+- Chained \`ADD\`: "Add 'Submit report' due this Friday, then add 'Review draft' due next Friday"
+  Output: { "actions": [
+    { "intent": "ADD_TASK", "tasks": [{ "text": "Submit report", "dueDate": "this Friday" }] },
+    { "intent": "ADD_TASK", "tasks": [{ "text": "Review draft", "dueDate": "next Friday" }] }
+  ] }
+- SORT_BY priority: "sort by priority from high to low"
+  Output: { "actions": [{ "intent": "SORT_BY", "sortOption": "priorityHighToLow" }] }
+- SHOW_TASKS by date: "Show me tasks to be done this week"
+  Output: { "actions": [{ "intent": "SHOW_TASKS", "filter": { "dueDate": "this week" } }], "originalQuery": "tasks to be done this week" }
+- SHOW_TASKS by text: "Show me my grocery related tasks"
+  Output: { "actions": [{ "intent": "SHOW_TASKS", "filter": { "text": "grocery" } }], "originalQuery": "my grocery related tasks" }
+- Self-Correction: "Add 'Workout' with low priority... no wait, make that high priority... actually delete it... no keep it but change it to medium priority and due tomorrow"
+  Output: { "actions": [
+    { "intent": "ADD_TASK", "tasks": [{ "text": "Workout", "priority": "medium", "dueDate": "tomorrow" }] }
+  ] }
+- Complex Positional: "delete the second to last task and the last 3 tasks"
+  Output: { "actions": [
+    { "intent": "DELETE_TASK", "filter": { "positions": ["second last"] } },
+    { "intent": "DELETE_TASK", "filter": { "positions": [{ "start": -3, "end": -1 }] } }
+  ] }
+- MARK_INCOMPLETE: "untick the first task" or "mark 'Buy groceries' as not done"
+  Output: { "actions": [{ "intent": "MARK_INCOMPLETE", "filter": { "positions": [1] } }] }
+- Positional moves are NOT supported. "Move task 3 to 1" should be ignored. Respond with UNKNOWN intent.
+  Output: { "actions": [{ "intent": "UNKNOWN" }] }
+- Simple \`ADD\`: "Remind me to buy milk"
+  Output: { "actions": [{ "intent": "ADD_TASK", "tasks": [{ "text": "Buy milk", "location": null, "priority": null, "dueDate": null }] }] }
+- Simple \`DELETE\`: "delete the first to-do"
+  Output: { "actions": [{ "intent": "DELETE_TASK", "filter": { "positions": [1] } }] }
 
 Now, process the provided user's task description.
 `;
@@ -138,7 +141,18 @@ export async function analyzeTaskDetails(
       throw new Error("Groq API returned an empty response.");
     }
     
-    return JSON.parse(content) as AnalyzeTaskDetailsOutput;
+    const result = JSON.parse(content) as AnalyzeTaskDetailsOutput;
+    // Ensure the response has the correct top-level structure
+    if (!result || !Array.isArray(result.actions)) {
+        console.warn("Groq API returned an invalid structure. Wrapping in actions array.", result);
+        // Attempt to gracefully handle cases where it might return the old single-action format
+        if (result && typeof (result as any).intent === 'string') {
+            return { actions: [result as any] };
+        }
+        return { actions: [{ intent: 'UNKNOWN' }] };
+    }
+
+    return result;
 
   } catch (error) {
     console.error("Groq API Error:", error);

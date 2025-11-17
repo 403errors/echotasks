@@ -1,3 +1,4 @@
+
 'use server';
 
 import { DeepgramClient, createClient } from '@deepgram/sdk';
@@ -20,7 +21,7 @@ export async function processVoiceCommand(formData: FormData): Promise<{ transcr
   if (!file || file.size === 0) {
     throw new Error('No audio file provided.');
   }
-
+  
   const buffer = Buffer.from(await file.arrayBuffer());
 
   try {
@@ -46,19 +47,12 @@ export async function processVoiceCommand(formData: FormData): Promise<{ transcr
     }
 
     // 2. Immediately analyze the transcript with Groq
-    try {
-      const analysis = await analyzeTaskDetails({ taskDescription: transcript });
-      return { transcript, analysis };
-    } catch (analysisError) {
-      console.error("Error analyzing task:", analysisError);
-      if (analysisError instanceof Error) {
-        throw new Error(`Task analysis failed: ${analysisError.message}`);
-      }
-      throw new Error("Task analysis failed with an unknown error.");
-    }
+    const analysis = await analyzeTaskDetails({ taskDescription: transcript });
+    return { transcript, analysis };
 
   } catch (error) {
     console.error("Error during voice command processing:", error);
+    // Re-throw the error to be caught by the client
     if (error instanceof Error) {
         throw new Error(error.message);
     }
