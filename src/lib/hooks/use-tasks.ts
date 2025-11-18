@@ -12,9 +12,8 @@ const priorityOrder: Record<string, number> = { high: 1, medium: 2, low: 3, defa
 
 
 type UndoAction =
-  | { type: 'delete'; task: Task }
-  | { type: 'add'; id: string }
-  | { type: 'update'; originalTask: Task }
+  | { type: 'add-many'; ids: string[] }
+  | { type: 'update-many'; originalTasks: Task[] }
   | { type: 'delete-many'; tasks: Task[] }
   | { type: 'complete-many'; originalTasks: Task[] };
 
@@ -146,24 +145,25 @@ export function useTasks(sortOption: SortOption) {
       setLastAction(null);
   }, []);
 
-  const addTask = useCallback((taskDetails: Omit<Task, 'id' | 'completed' | 'createdAt' | 'lastUpdated'>) => {
+  const addTasks = useCallback((tasksDetails: Omit<Task, 'id' | 'completed' | 'createdAt' | 'lastUpdated'>[]) => {
     const now = new Date().toISOString();
-    const newTask: Task = {
-      ...taskDetails,
-      id: crypto.randomUUID(),
-      completed: false,
-      createdAt: now,
-      lastUpdated: now,
-    };
-    setTasks((prevTasks) => sortTasks([newTask, ...prevTasks], sortOption));
-    setLastAction({ type: 'add', id: newTask.id });
+    const newTasks = tasksDetails.map(details => ({
+        ...details,
+        id: crypto.randomUUID(),
+        completed: false,
+        createdAt: now,
+        lastUpdated: now,
+    }));
+    
+    setTasks((prevTasks) => sortTasks([...newTasks, ...prevTasks], sortOption));
+    setLastAction({ type: 'add-many', ids: newTasks.map(t => t.id) });
   }, [sortOption]);
 
   const toggleTask = useCallback((id: string) => {
     const originalTask = tasks.find(t => t.id === id);
     if (!originalTask) return;
 
-    setLastAction({ type: 'update', originalTask });
+    setLastAction({ type: 'update-many', originalTasks: [originalTask] });
     setTasks((prevTasks) =>
       prevTasks.map((task) =>
         task.id === id ? { ...task, completed: !task.completed, lastUpdated: new Date().toISOString() } : task
@@ -171,12 +171,13 @@ export function useTasks(sortOption: SortOption) {
     );
   }, [tasks]);
 
-  const deleteTask = useCallback((id: string) => {
-    const taskToDelete = tasks.find(t => t.id === id);
-    if (!taskToDelete) return;
+  const deleteTask = useCallback((ids: string | string[]) => {
+    const idsToDelete = Array.isArray(ids) ? ids : [ids];
+    const tasksToDelete = tasks.filter(t => idsToDelete.includes(t.id));
+    if (tasksToDelete.length === 0) return;
 
-    setLastAction({ type: 'delete', task: taskToDelete });
-    setTasks((prevTasks) => prevTasks.filter((task) => task.id !== id));
+    setLastAction({ type: 'delete-many', tasks: tasksToDelete });
+    setTasks((prevTasks) => prevTasks.filter((task) => !idsToDelete.includes(task.id)));
   }, [tasks]);
   
   const deleteOverdueTasks = useCallback(() => {
@@ -186,7 +187,7 @@ export function useTasks(sortOption: SortOption) {
     const overdueTasks = tasks.filter(task => {
         if (!task.dueDate) return false;
         const dueDate = new Date(task.dueDate + 'T00:00:00');
-        return dueDate < today;
+        return dueDate < today && !task.completed;
     });
 
     if (overdueTasks.length === 0) return 0;
@@ -203,29 +204,37 @@ export function useTasks(sortOption: SortOption) {
     setTasks([]);
   }, [tasks]);
 
-  const updateTask = useCallback((id: string, updates: Partial<Omit<Task, 'id' | 'createdAt'>>) => {
-    const originalTask = tasks.find(t => t.id === id);
-    if(!originalTask) return;
+  const updateTasks = useCallback((updates: {id: string, updates: Partial<Omit<Task, 'id' | 'createdAt'>>}[]) => {
+      const idsToUpdate = new Set(updates.map(u => u.id));
+      const originalTasks = tasks.filter(t => idsToUpdate.has(t.id));
+      if (originalTasks.length === 0) return;
 
-    setLastAction({ type: 'update', originalTask });
-    setTasks(prevTasks => {
-      const updatedTasks = prevTasks.map(task => {
-        if (task.id === id) {
-          const newUpdates = { ...updates };
-          if (typeof newUpdates.dueDate === 'string' && newUpdates.dueDate) {
-            const parsedDate = chrono.parseDate(newUpdates.dueDate, new Date(), { forwardDate: true });
-            newUpdates.dueDate = parsedDate ? formatDate(parsedDate) : task.dueDate;
-          }
-          return { ...task, ...newUpdates, lastUpdated: new Date().toISOString() };
-        }
-        return task;
+      setLastAction({ type: 'update-many', originalTasks });
+
+      setTasks(prevTasks => {
+          const updatesMap = new Map(updates.map(u => [u.id, u.updates]));
+          const updatedTasks = prevTasks.map(task => {
+              if (updatesMap.has(task.id)) {
+                  const newUpdates = { ...updatesMap.get(task.id) };
+                  if (typeof newUpdates.dueDate === 'string' && newUpdates.dueDate) {
+                    const parsedDate = chrono.parseDate(newUpdates.dueDate, new Date(), { forwardDate: true });
+                    newUpdates.dueDate = parsedDate ? formatDate(parsedDate) : task.dueDate;
+                  }
+                  return { ...task, ...newUpdates, lastUpdated: new Date().toISOString() };
+              }
+              return task;
+          });
+          return sortTasks(updatedTasks, sortOption);
       });
-      return sortTasks(updatedTasks, sortOption);
-    });
+
   }, [tasks, sortOption]);
 
+  const updateTask = useCallback((id: string, updates: Partial<Omit<Task, 'id' | 'createdAt'>>) => {
+    updateTasks([{ id, updates }]);
+  }, [updateTasks]);
+
   const completeTasks = useCallback((ids: string[], completed: boolean) => {
-    const originalTasks = tasks.filter(t => ids.includes(t.id));
+    const originalTasks = tasks.filter(t => ids.includes(t.id) && t.completed !== completed);
     if (originalTasks.length === 0) return;
 
     setLastAction({ type: 'complete-many', originalTasks });
@@ -240,30 +249,23 @@ export function useTasks(sortOption: SortOption) {
     if (!lastAction) return;
 
     switch (lastAction.type) {
-      case 'add':
-        setTasks(prev => prev.filter(t => t.id !== lastAction.id));
+      case 'add-many':
+        setTasks(prev => prev.filter(t => !lastAction.ids.includes(t.id)));
         break;
-      case 'delete':
-        setTasks(prev => sortTasks([...prev, lastAction.task], sortOption));
-        break;
-      case 'update': {
-        const revertedTasks = tasks.map(t => t.id === lastAction.originalTask.id ? lastAction.originalTask : t);
-        setTasks(sortTasks(revertedTasks, sortOption));
-        break;
-      }
-      case 'complete-many': {
-        const originalMap = new Map(lastAction.originalTasks.map(t => [t.id, t]));
-        setTasks(prev => prev.map(t => originalMap.get(t.id) || t));
-        break;
-      }
       case 'delete-many':
         setTasks(prev => sortTasks([...prev, ...lastAction.tasks], sortOption));
         break;
+      case 'update-many':
+      case 'complete-many': {
+        const originalMap = new Map(lastAction.originalTasks.map(t => [t.id, t]));
+        setTasks(prev => sortTasks(prev.map(t => originalMap.get(t.id) || t), sortOption));
+        break;
+      }
     }
     
     setLastAction(null);
-  }, [lastAction, tasks, sortOption]);
+  }, [lastAction, sortOption]);
 
 
-  return { tasks, addTask, toggleTask, deleteTask, isLoaded, deleteAllTasks, updateTask, completeTasks, lastAction, revertLastAction, clearLastAction, deleteOverdueTasks };
+  return { tasks, addTasks, toggleTask, deleteTask, isLoaded, deleteAllTasks, updateTask, updateTasks, completeTasks, lastAction, revertLastAction, clearLastAction, deleteOverdueTasks };
 }

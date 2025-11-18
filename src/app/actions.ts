@@ -61,9 +61,10 @@ export async function processVoiceCommand(formData: FormData): Promise<{ transcr
 }
 
 
-export async function getWeatherData() {
+export async function getWeatherData(latitude?: number, longitude?: number) {
   try {
-    const response = await fetch('http://wttr.in/?format=j1', { cache: 'no-store' });
+    const locationQuery = latitude && longitude ? `${latitude},${longitude}` : '';
+    const response = await fetch(`http://wttr.in/${locationQuery}?format=j1`, { cache: 'no-store' });
     if (!response.ok) {
       throw new Error(`Weather API failed with status: ${response.status}`);
     }

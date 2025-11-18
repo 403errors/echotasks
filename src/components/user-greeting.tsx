@@ -1,8 +1,9 @@
+
 "use client";
 
 import { useState, useEffect, useCallback } from 'react';
 import { getWeatherData } from '@/app/actions';
-import { LoaderCircle, Sun, Cloudy, CloudRain, Snowflake } from 'lucide-react';
+import { LoaderCircle, Sun, Cloudy, CloudRain, Snowflake, MapPinOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSettings } from '@/lib/hooks/use-settings';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -40,6 +41,7 @@ export function UserGreeting() {
   const [currentDate, setCurrentDate] = useState('');
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [isLoadingWeather, setIsLoadingWeather] = useState(true);
+  const [locationError, setLocationError] = useState<string | null>(null);
   const { settings } = useSettings();
   const isMobile = useIsMobile();
 
@@ -72,15 +74,31 @@ export function UserGreeting() {
         return;
     }
     setIsLoadingWeather(true);
-    try {
-        const weatherData = await getWeatherData();
-        setWeather(weatherData);
-    } catch(e) {
-        console.error("Failed to fetch weather", e);
-        setWeather(null);
-    } finally {
+    setLocationError(null);
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const { latitude, longitude } = position.coords;
+        try {
+          const weatherData = await getWeatherData(latitude, longitude);
+          setWeather(weatherData);
+        } catch (e) {
+          console.error("Failed to fetch weather", e);
+          setWeather(null);
+        } finally {
+          setIsLoadingWeather(false);
+        }
+      },
+      (error) => {
+        console.error("Geolocation error:", error);
+        if (error.code === error.PERMISSION_DENIED) {
+            setLocationError("Location access denied.");
+        } else {
+            setLocationError("Location unavailable.");
+        }
         setIsLoadingWeather(false);
-    }
+      }
+    );
   }, [isMobile]);
 
 
@@ -103,7 +121,15 @@ export function UserGreeting() {
             {!isMobile && (
               <div className={cn("flex items-center gap-2", isLoadingWeather && "opacity-50")}>
                   {isLoadingWeather ? (
-                      <LoaderCircle className="animate-spin h-4 w-4" />
+                      <>
+                        <LoaderCircle className="animate-spin h-4 w-4" />
+                        <span>Fetching local weather...</span>
+                      </>
+                  ) : locationError ? (
+                      <>
+                        <MapPinOff className="h-4 w-4" />
+                        <span>{locationError}</span>
+                      </>
                   ) : (
                       weather ? (
                           <>
@@ -122,5 +148,3 @@ export function UserGreeting() {
     </div>
   );
 }
-
-    

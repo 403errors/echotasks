@@ -12,7 +12,7 @@ import { Card } from '@/components/ui/card';
 import { detectPriorityFast } from '@/lib/priority-detection';
 import * as chrono from 'chrono-node';
 import type { Task } from '@/types';
-import type { AnalyzeTaskDetailsOutput } from '@/ai/flows/analyze-task-details';
+import type { AnalyzeTaskDetailsOutput, Action } from '@/ai/flows/analyze-task-details';
 import { EditTaskDialog } from '@/components/edit-task-dialog';
 import { ConfirmationDialog } from '@/components/confirmation-dialog';
 import { InfoDialog } from '@/components/info-dialog';
@@ -31,6 +31,9 @@ import { useSettings } from '@/lib/hooks/use-settings';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { FilteredTasksDialog } from '@/components/filtered-tasks-dialog';
 import { ProTipDialog } from '@/components/pro-tip-dialog';
+import { CompleteTasksDialog } from '@/components/complete-tasks-dialog';
+import { UpdateTasksDialog } from '@/components/update-tasks-dialog';
+import { TaskDetailsDialog } from '@/components/task-details-dialog';
 
 
 type SortOption = 'creationDate' | 'dueDate' | 'lastUpdated' | 'priorityHighToLow' | 'priorityLowToHigh';
@@ -68,6 +71,57 @@ export const commandExamples = [
   "Show me my grocery related tasks",
   "Show me tasks to be done this week",
 ];
+
+const topicSynonyms: Record<string, string[]> = {
+    shopping: ['buy', 'groceries', 'get', 'shop'],
+    calls: ['call', 'phone', 'contact'],
+    presentation: ['presentation', 'slides', 'deck'],
+    workout: ['workout', 'exercise', 'gym', 'run', 'yoga'],
+    cleaning: ['clean', 'tidy', 'organize'],
+    report: ['report', 'document', 'summary'],
+    work: ['work', 'office', 'project'],
+    submit: ['submit', 'submitting'],
+};
+
+function getFuzzyMatchingTaskIds(allTasks: Task[], topic: string): string[] {
+    if (!topic) return [];
+    const lowerTopic = topic.toLowerCase();
+
+    // --- Phase 1: Prioritize phrase matching ---
+    const phraseMatches = allTasks.filter(task => {
+        const lowerTaskText = task.text.toLowerCase();
+        // Check if one string is a substring of the other. This handles cases like "submit report" vs "submitting the report".
+        return lowerTaskText.includes(lowerTopic) || lowerTopic.includes(lowerTaskText);
+    });
+
+    if (phraseMatches.length > 0) {
+        return phraseMatches.map(task => task.id);
+    }
+    
+    // --- Phase 2: Fallback to keyword and synonym matching if no phrase matches are found ---
+    const topicWords = new Set(lowerTopic.split(/\W+/).filter(w => w.length > 2));
+    const synonymKey = Object.keys(topicSynonyms).find(key => 
+        topicSynonyms[key].includes(lowerTopic) || key.includes(lowerTopic)
+    ) || lowerTopic;
+    const synonyms = topicSynonyms[synonymKey] || [synonymKey];
+    const synonymSet = new Set(synonyms);
+
+    return allTasks
+        .filter(task => {
+            const lowerTaskText = task.text.toLowerCase();
+            const taskWords = new Set(lowerTaskText.split(/\W+/));
+
+            // Synonym check
+            if ([...taskWords].some(word => synonymSet.has(word))) return true;
+
+            // Check if any significant word from the topic appears in the task text
+            if ([...topicWords].some(topicWord => lowerTaskText.includes(topicWord))) return true;
+            
+            return false;
+        })
+        .map(task => task.id);
+}
+
 
 function AnimatedSuggestions() {
   const [index, setIndex] = useState(0);
@@ -114,11 +168,12 @@ export default function Home() {
   const [sortOption, setSortOption] = useState<SortOption>('creationDate');
   const { 
     tasks, 
-    addTask, 
+    addTasks, 
     toggleTask, 
     deleteTask, 
     isLoaded, 
     updateTask, 
+    updateTasks,
     completeTasks, 
     deleteAllTasks, 
     lastAction, 
@@ -128,12 +183,25 @@ export default function Home() {
   } = useTasks(sortOption);
   const [isProcessing, setIsProcessing] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [detailsTask, setDetailsTask] = useState<Task | null>(null);
   const [isInfoDialogOpen, setIsInfoDialogOpen] = useState(false);
   const [isProTipOpen, setIsProTipOpen] = useState(false);
   const { settings } = useSettings();
   const isMobile = useIsMobile();
   const voiceRecorderRef = useRef<VoiceRecorderRef>(null);
   const spacebarHeldRef = useRef(false);
+
+  const [completionState, setCompletionState] = useState<{
+    isOpen: boolean;
+    tasks: Task[];
+  }>({ isOpen: false, tasks: [] });
+
+  const [updateState, setUpdateState] = useState<{
+    isOpen: boolean;
+    tasks: Task[];
+    updates: Action['updates'];
+    title: string;
+  }>({ isOpen: false, tasks: [], updates: {}, title: '' });
 
   const [filteredTasksState, setFilteredTasksState] = useState<{
     isOpen: boolean;
@@ -155,14 +223,17 @@ export default function Home() {
 
     useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.code !== 'Space' || event.repeat || !settings.spacebarToTalk || spacebarHeldRef.current) {
-        return;
-      }
+      if (event.code !== 'Space' || !settings.spacebarToTalk) return;
+        
       const target = event.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
         return;
       }
+      
       event.preventDefault();
+
+      if (event.repeat || spacebarHeldRef.current) return;
+
       spacebarHeldRef.current = true;
       voiceRecorderRef.current?.startRecording();
     };
@@ -175,13 +246,22 @@ export default function Home() {
       spacebarHeldRef.current = false;
       voiceRecorderRef.current?.stopRecording();
     };
+    
+    // Also prevent default on keypress to stop scrolling
+    const handleKeyPress = (event: KeyboardEvent) => {
+        if (event.code === 'Space') {
+            event.preventDefault();
+        }
+    };
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('keypress', handleKeyPress);
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('keypress', handleKeyPress);
     };
   }, [settings.spacebarToTalk]);
 
@@ -234,48 +314,65 @@ export default function Home() {
 
 
   const getFilteredTaskIds = (
-    filter: AnalyzeTaskDetailsOutput['actions'][0]['filter']
+    filter: Action['filter']
   ): string[] => {
     if (!filter) return [];
 
-    let filteredTasksForPositions = [...sortedTasks];
-    let filteredTasksForAttributes = [...tasks];
-
-    // Handle attribute filters first on the original task list
+    let baseTasks = [...tasks]; // Use original tasks for attribute filters
+    
     if (filter.text) {
-        filteredTasksForAttributes = filteredTasksForAttributes.filter(t => t.text.toLowerCase().includes(filter.text!.toLowerCase()));
+        const fuzzyIds = getFuzzyMatchingTaskIds(baseTasks, filter.text);
+        const directIds = baseTasks.filter(t => t.text.toLowerCase().includes(filter.text!.toLowerCase())).map(t => t.id);
+        const combined = new Set([...fuzzyIds, ...directIds]);
+        baseTasks = baseTasks.filter(t => combined.has(t.id));
     }
     
     if (filter.dueDate) {
         const query = filter.dueDate.toLowerCase();
-        const parsedDateRange = chrono.parse(query);
-
+        
+        const parsedDateRange = chrono.parse(query, new Date(), { forwardDate: true });
         if (parsedDateRange.length > 0) {
             const { start, end } = parsedDateRange[0];
             const startDate = start.date();
             const endDate = end ? end.date() : new Date(startDate.getTime() + 24 * 60 * 60 * 1000 - 1);
-
-            filteredTasksForAttributes = filteredTasksForAttributes.filter(task => {
+            
+            // Set times to cover the whole days
+            startDate.setHours(0, 0, 0, 0);
+            endDate.setHours(23, 59, 59, 999);
+            
+            baseTasks = baseTasks.filter(task => {
                 if (!task.dueDate) return false;
-                const taskDueDate = new Date(task.dueDate);
+                // Use T12:00:00 to avoid timezone shifts putting it on the previous day
+                const taskDueDate = new Date(task.dueDate + 'T12:00:00'); 
                 return taskDueDate >= startDate && taskDueDate <= endDate;
             });
         }
     }
     
     if (filter.status) {
-        filteredTasksForAttributes = filteredTasksForAttributes.filter(t => t.completed === (filter.status === 'completed'));
+        if (filter.status === 'overdue') {
+             const today = new Date();
+             today.setHours(0,0,0,0);
+             baseTasks = baseTasks.filter(t => t.dueDate && new Date(t.dueDate) < today && !t.completed);
+        } else {
+            baseTasks = baseTasks.filter(t => t.completed === (filter.status === 'completed'));
+        }
     }
     
     if (filter.priority && filter.priority.length > 0) {
         const prioritySet = new Set(filter.priority);
-        filteredTasksForAttributes = filteredTasksForAttributes.filter(t => t.priority && prioritySet.has(t.priority));
+        baseTasks = baseTasks.filter(t => t.priority && prioritySet.has(t.priority));
     }
 
+    if (filter.location) {
+        const lowerLocation = filter.location.toLowerCase();
+        baseTasks = baseTasks.filter(t => t.location && t.location.toLowerCase().includes(lowerLocation));
+    }
 
     if (filter.positions && filter.positions.length > 0) {
         const indices = new Set<number>();
-        const taskCount = filteredTasksForPositions.length;
+        const posTasks = [...sortedTasks]; // Use sortedTasks for positional filters
+        const taskCount = posTasks.length;
 
         filter.positions.forEach(pos => {
             if (pos === 'last') {
@@ -301,10 +398,10 @@ export default function Home() {
             }
         });
         
-        return Array.from(indices).map(index => filteredTasksForPositions[index].id);
+        return Array.from(indices).map(index => posTasks[index].id);
     }
     
-    return filteredTasksForAttributes.map(t => t.id);
+    return baseTasks.map(t => t.id);
 };
   
   const handleRecordingComplete = async (audioBlob: Blob) => {
@@ -328,7 +425,8 @@ export default function Home() {
         return;
       }
       
-      let summary = { added: 0, updated: 0, deleted: 0, completed: 0, uncompleted: 0, sorted: false, shown: false, unknown: 0 };
+      let summary = { added: 0, updated: 0, deleted: 0, completed: 0, uncompleted: 0, sorted: false, shown: false, unknown: 0, queried: 0 };
+      const tasksToAdd = [];
 
       for (const action of analysis.actions) {
         switch (action.intent) {
@@ -337,44 +435,87 @@ export default function Home() {
               summary.unknown++;
               continue;
             }
-            // Use client-side detection only if AI doesn't provide it
-            const priorityResult = await detectPriorityFast(transcript);
-            const defaultPriority = priorityResult.priority === 'none' ? 'medium' : priorityResult.priority;
-            const defaultParsedDate = chrono.parseDate(transcript, new Date(), { forwardDate: true });
             
-            action.tasks.forEach(taskInfo => {
-              const taskDueDate = taskInfo.dueDate ? chrono.parseDate(taskInfo.dueDate, new Date(), { forwardDate: true }) : defaultParsedDate;
-              addTask({
-                  text: taskInfo.text,
-                  priority: taskInfo.priority || defaultPriority,
-                  dueDate: taskDueDate ? formatDate(taskDueDate) : null,
-                  location: taskInfo.location || null,
-              });
-              summary.added++;
-            });
+            for (const taskInfo of action.tasks) {
+                // Check for similar tasks only if the command is a simple add, without extra details.
+                const isSimpleAdd = !taskInfo.dueDate && !taskInfo.priority && !taskInfo.location;
+                const similarTaskIds = isSimpleAdd ? getFuzzyMatchingTaskIds(tasks.filter(t => !t.completed), taskInfo.text) : [];
+
+                if (similarTaskIds.length > 0 && action.intent !== 'UPDATE_TASK') {
+                    // This is a likely duplicate, inform the user.
+                    toast({ title: "Task already exists", description: `A similar task for "${taskInfo.text}" already exists.`});
+                } else {
+                    // If it's not a simple add (i.e., it has a date/priority), or no similar task was found, treat it as an update or a new task.
+                    const fuzzyIdsForUpdate = getFuzzyMatchingTaskIds(tasks.filter(t => !t.completed), taskInfo.text);
+                    
+                    if (fuzzyIdsForUpdate.length > 0 && !isSimpleAdd) {
+                        // A similar task exists AND the user provided new details (date/prio), so let's update it.
+                        const updates = {
+                            priority: taskInfo.priority,
+                            dueDate: taskInfo.dueDate,
+                            location: taskInfo.location,
+                        };
+                        // Remove undefined keys so we don't nullify existing values
+                        Object.keys(updates).forEach(key => (updates as any)[key] === undefined && delete (updates as any)[key]);
+
+                        if (Object.keys(updates).length > 0) {
+                            updateTask(fuzzyIdsForUpdate[0], updates);
+                            summary.updated++;
+                            toast({ title: "Task Updated", description: `Updated existing task: "${tasks.find(t => t.id === fuzzyIdsForUpdate[0])?.text}".` });
+                        }
+                    } else {
+                        // No similar task, queue it to be added as new
+                        const priorityResult = await detectPriorityFast(transcript);
+                        const defaultPriority = priorityResult.priority === 'none' ? null : priorityResult.priority;
+                        
+                        const now = new Date();
+                        const taskDueDate = taskInfo.dueDate ? chrono.parseDate(taskInfo.dueDate, now, { forwardDate: true }) : chrono.parseDate(transcript, now, { forwardDate: true });
+                        
+                        tasksToAdd.push({
+                            text: taskInfo.text,
+                            priority: taskInfo.priority || defaultPriority,
+                            dueDate: taskDueDate ? formatDate(taskDueDate) : null,
+                            location: taskInfo.location || null,
+                        });
+                        summary.added++;
+                    }
+                }
+            }
             break;
           }
 
           case 'DELETE_TASK': {
             const idsToDelete = getFilteredTaskIds(action.filter);
             if (idsToDelete.length === 0) {
-              summary.unknown++;
+              toast({ title: "No matching tasks", description: "No tasks found to delete." });
               continue;
             }
-
+            
+            const tasksToDelete = tasks.filter(t => idsToDelete.includes(t.id));
+            
             const onConfirm = () => {
-              idsToDelete.forEach(id => deleteTask(id));
+              deleteTask(idsToDelete);
               summary.deleted += idsToDelete.length;
               toast({ title: "Task(s) Deleted", description: `Removed ${idsToDelete.length} task(s).` });
             };
 
-            if (idsToDelete.length > 1) {
-              setConfirmationState({
-                isOpen: true,
-                title: `Delete ${idsToDelete.length} tasks?`,
-                description: "This action cannot be undone, but you can use the undo button afterward.",
-                onConfirm,
-              });
+            const isSingleHighPriority = idsToDelete.length === 1 && tasksToDelete[0]?.priority === 'high';
+            
+            if (idsToDelete.length > 1 || isSingleHighPriority) {
+                let title = `Delete ${idsToDelete.length} task(s)?`;
+                let description = "This action cannot be undone, but you can use the undo button afterward.";
+
+                if (isSingleHighPriority) {
+                    title = "Confirm Deletion";
+                    description = `"${tasksToDelete[0].text}" is a high priority task. Are you sure you want to delete it?`;
+                }
+
+                setConfirmationState({
+                    isOpen: true,
+                    title,
+                    description,
+                    onConfirm,
+                });
             } else {
               onConfirm();
             }
@@ -407,13 +548,25 @@ export default function Home() {
           }
 
           case 'MARK_COMPLETED': {
-            const idsToComplete = getFilteredTaskIds(action.filter);
-            if (idsToComplete.length === 0) {
-              summary.unknown++;
-              continue;
+            let idsToComplete: string[] = [];
+            if (action.filter?.positions && action.filter.positions.length > 0) {
+                idsToComplete = getFilteredTaskIds(action.filter);
+            } else if (action.filter?.text) {
+                idsToComplete = getFuzzyMatchingTaskIds(tasks.filter(t => !t.completed), action.filter.text);
+            } else if (action.filter) { // For bulk actions like "complete everything today"
+                idsToComplete = getFilteredTaskIds(action.filter);
             }
-            completeTasks(idsToComplete, true);
-            summary.completed += idsToComplete.length;
+
+
+            if (idsToComplete.length === 0) {
+                toast({ title: "No Matching Tasks", description: `No tasks found to complete.` });
+            } else if (idsToComplete.length === 1) {
+                completeTasks(idsToComplete, true);
+                summary.completed++;
+            } else {
+                const matchingTasks = tasks.filter(t => idsToComplete.includes(t.id));
+                setCompletionState({ isOpen: true, tasks: matchingTasks });
+            }
             break;
           }
           
@@ -429,13 +582,77 @@ export default function Home() {
           }
 
           case 'UPDATE_TASK': {
-            const idsToUpdate = getFilteredTaskIds(action.filter);
-            if (idsToUpdate.length === 0 || !action.updates) {
-               summary.unknown++;
-               continue;
+            if (!action.updates) {
+                summary.unknown++;
+                continue;
             }
-            idsToUpdate.forEach(id => updateTask(id, action.updates!));
-            summary.updated += idsToUpdate.length;
+
+            let idsToUpdate: string[] = getFilteredTaskIds(action.filter);
+
+            if (idsToUpdate.length === 0) {
+                toast({ title: "No matching tasks", description: `No tasks found to update for "${action.filter?.text || 'your query'}".` });
+                continue;
+            }
+            
+            const performUpdate = (targetIds: string[]) => {
+                let finalUpdates = { ...action.updates };
+                
+                if (finalUpdates.dueDate) {
+                    const parsedDate = chrono.parseDate(finalUpdates.dueDate, new Date(), { forwardDate: true });
+                    finalUpdates.dueDate = parsedDate ? formatDate(parsedDate) : null;
+                }
+                
+                if (finalUpdates.dueDateShift) {
+                    const { days = 0, weeks = 0, months = 0 } = finalUpdates.dueDateShift;
+                    const tasksToShift = tasks.filter(t => targetIds.includes(t.id));
+                    
+                    const shiftedUpdates = tasksToShift.map(task => {
+                        const currentDueDate = task.dueDate ? new Date(task.dueDate + 'T00:00:00') : new Date();
+                        currentDueDate.setDate(currentDueDate.getDate() + days + (weeks * 7));
+                        currentDueDate.setMonth(currentDueDate.getMonth() + months);
+                        return { id: task.id, updates: { ...finalUpdates, dueDate: formatDate(currentDueDate) } };
+                    });
+                    
+                    updateTasks(shiftedUpdates);
+
+                } else {
+                    updateTasks(targetIds.map(id => ({ id, updates: finalUpdates })));
+                }
+
+                summary.updated += targetIds.length;
+            };
+
+            if (idsToUpdate.length > 1) {
+                const updatesCount = Object.keys(action.updates).length;
+                if(action.filter?.text && updatesCount > 0){
+                    const matchingTasks = tasks.filter(t => idsToUpdate.includes(t.id));
+                    setUpdateState({
+                        isOpen: true,
+                        tasks: matchingTasks,
+                        updates: action.updates,
+                        title: `Update ${action.filter.text} tasks?`
+                    });
+                } else if(action.filter?.dueDate){
+                     const onConfirm = () => performUpdate(idsToUpdate);
+                     setConfirmationState({
+                        isOpen: true,
+                        title: `Bulk Update`,
+                        description: `This will update ${idsToUpdate.length} tasks. Proceed?`,
+                        onConfirm,
+                    });
+                } else {
+                     const onConfirm = () => performUpdate(idsToUpdate);
+                     setConfirmationState({
+                        isOpen: true,
+                        title: `Bulk Update`,
+                        description: `This will update ${idsToUpdate.length} tasks. Proceed?`,
+                        onConfirm,
+                    });
+                }
+
+            } else {
+                performUpdate(idsToUpdate);
+            }
             break;
           }
           
@@ -471,9 +688,17 @@ export default function Home() {
               };
 
               const queryDescription = getQueryDescription();
+              const hasMatchingTasks = filtered.length > 0;
 
-              if (filtered.length === 0) {
-                  toast({ title: "No tasks found", description: `No tasks match ${queryDescription}.` });
+              if (!hasMatchingTasks) {
+                  const emptyStateMessages: Record<string, string> = {
+                    'overdue': "No overdue tasks. Great job!",
+                    'completed': "No tasks completed yet. Keep going!",
+                    'high': "No urgent tasks. You're all caught up!",
+                  };
+                  const filterKey = action.filter.status || action.filter.priority?.[0];
+                  const message = filterKey ? emptyStateMessages[filterKey] : `No tasks match ${queryDescription}.`;
+                  toast({ title: "No tasks found", description: message });
               } else {
                   setFilteredTasksState({
                       isOpen: true,
@@ -483,6 +708,25 @@ export default function Home() {
                   summary.shown = true;
               }
               break;
+          }
+          
+          case 'QUERY_TASK_INFO': {
+                const targetTasks = getFilteredTaskIds(action.filter).map(id => tasks.find(t => t.id === id)).filter(Boolean) as Task[];
+                if (targetTasks.length === 0) {
+                    toast({ title: "No matching tasks found." });
+                    continue;
+                }
+
+                if (action.queryType === 'count') {
+                    toast({ title: "Task Count", description: `You have ${targetTasks.length} matching task(s).`});
+                } else if (targetTasks.length > 1 && action.queryType !== 'details') {
+                     toast({ title: "Multiple Tasks Found", description: "Your query matched multiple tasks. Please be more specific." });
+                } else {
+                    const task = targetTasks[0];
+                    setDetailsTask(task);
+                }
+                summary.queried++;
+                break;
           }
 
           case 'DELETE_ALL': {
@@ -509,6 +753,10 @@ export default function Home() {
             break;
         }
       }
+
+      if (tasksToAdd.length > 0) {
+        addTasks(tasksToAdd);
+      }
       
       // Generate a summary toast if not handled by individual actions
       let summaryParts = [];
@@ -518,17 +766,25 @@ export default function Home() {
       if(summary.completed > 0) summaryParts.push(`Completed ${summary.completed}`);
       if(summary.uncompleted > 0) summaryParts.push(`Un-completed ${summary.uncompleted}`);
       if(summary.sorted) summaryParts.push(`Sorted list`);
+      if(summary.queried > 0 && !detailsTask) summaryParts.push(`Queried ${summary.queried} item(s)`);
 
-      if (summaryParts.length > 0) {
+
+      if (summaryParts.length > 0 && !summary.shown && !completionState.isOpen && !updateState.isOpen && !confirmationState.isOpen) {
           toast({ title: "Actions Performed", description: summaryParts.join(', ') + '.' });
-      } else if (summary.unknown > 0 && !summary.shown) {
+      } else if (summary.unknown > 0 && !summary.shown && !completionState.isOpen && !updateState.isOpen) {
           toast({ variant: "destructive", title: "Some parts of the command were not understood." });
       }
 
     } catch (error) {
       console.error(error);
       const errorMessage = error instanceof Error ? error.message : "Please try again.";
-      if (typeof errorMessage === 'string' && errorMessage.includes('corrupt or unsupported data')) {
+      if (typeof errorMessage === 'string' && errorMessage.includes('The AI service (Groq) is currently experiencing technical difficulties')) {
+          toast({
+              variant: "destructive",
+              title: "AI Service Error",
+              description: errorMessage
+          });
+      } else if (typeof errorMessage === 'string' && errorMessage.includes('corrupt or unsupported data')) {
           toast({
               variant: "destructive",
               title: "Audio Unclear",
@@ -561,6 +817,24 @@ export default function Home() {
     updateTask(updatedTask.id, updatedTask);
     toast({ title: "Task updated" });
   }
+  
+  const handleUpdateTasks = (ids: string[], updates: Action['updates']) => {
+    if (ids.length > 0) {
+        updateTasks(ids.map(id => ({ id, updates: updates! })));
+        toast({ title: `${ids.length} task(s) updated.`});
+    }
+    setUpdateState({ isOpen: false, tasks: [], updates: {}, title: '' });
+  };
+
+
+  const handleCompleteTasks = (ids: string[]) => {
+    if (ids.length > 0) {
+        completeTasks(ids, true);
+        toast({ title: `${ids.length} task(s) completed.`});
+    }
+    setCompletionState({ isOpen: false, tasks: [] });
+  };
+
 
   return (
     <>
@@ -664,6 +938,12 @@ export default function Home() {
           onUpdate={handleUpdateTask}
         />
       )}
+      {detailsTask && (
+        <TaskDetailsDialog
+            task={detailsTask}
+            onOpenChange={(isOpen) => !isOpen && setDetailsTask(null)}
+        />
+      )}
       <ConfirmationDialog
           isOpen={confirmationState.isOpen}
           onOpenChange={handleCloseConfirmation}
@@ -688,8 +968,37 @@ export default function Home() {
         isOpen={isProTipOpen}
         onOpenChange={handleDismissProTip}
       />
+      <CompleteTasksDialog
+        isOpen={completionState.isOpen}
+        onOpenChange={(isOpen) => !isOpen && setCompletionState({ isOpen: false, tasks: [] })}
+        tasks={completionState.tasks}
+        onComplete={handleCompleteTasks}
+      />
+      <UpdateTasksDialog
+        isOpen={updateState.isOpen}
+        onOpenChange={(isOpen) => !isOpen && setUpdateState({ isOpen: false, tasks: [], updates: {}, title: ''})}
+        tasks={updateState.tasks}
+        updates={updateState.updates}
+        title={updateState.title}
+        onUpdate={handleUpdateTasks}
+      />
     </>
   );
 }
+
+    
+
+
+
+
+
+
+
+
+
+    
+ 
+
+    
 
     
